@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "selection_policy": {
+    "prefer_offline": true,
+    "benchmark_before_select": true,
+    "minimum_tool_correctness": null,
+    "notes": "Threshold will be set only after ReflexDesk's reproducible task benchmark exists."
+  },
+  "models": [
+    {
+      "id": "laya-english",
+      "role": "reflex",
+      "upstream": "convaiinnovations/laya",
+      "variant": "english",
+      "license": "Apache-2.0",
+      "status": "candidate",
+      "bundle": false
+    },
+    {
+      "id": "laya-multilingual",
+      "role": "reflex",
+      "upstream": "convaiinnovations/laya",
+      "variant": "multilingual",
+      "license": "Apache-2.0",
+      "status": "candidate",
+      "bundle": false
+    },
+    {
+      "id": "moonshine",
+      "role": "stt",
+      "upstream": "moonshine-ai/moonshine",
+      "license": "VERIFY_PER_CHECKPOINT",
+      "status": "candidate",
+      "bundle": false
+    },
+    {
+      "id": "spark-x2.5-1.7b",
+      "role": "planner",
+      "upstream": "VERIFY_EXACT_UPSTREAM",
+      "license": "VERIFY_EXACT_UPSTREAM",
+      "status": "candidate",
+      "bundle": false
+    },
+    {
+      "id": "spark-x2.5-4b",
+      "role": "planner",
+      "upstream": "VERIFY_EXACT_UPSTREAM",
+      "license": "VERIFY_EXACT_UPSTREAM",
+      "status": "candidate",
+      "bundle": false
+    }
+  ]
+}
