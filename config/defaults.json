@@ -1,0 +1,35 @@
+{
+  "mode": "offline",
+  "voice": {
+    "enabled": true,
+    "push_to_talk": false,
+    "shortcut": {
+      "windows_linux": "Ctrl+Shift+Space",
+      "macos": "Cmd+Shift+Space"
+    },
+    "stt_provider": "auto"
+  },
+  "overlay": {
+    "enabled": true,
+    "opacity": 0.72,
+    "click_through": true,
+    "position": "bottom-center",
+    "reactive_to_voice": true
+  },
+  "reflex": {
+    "provider": "laya",
+    "model": "auto"
+  },
+  "planner": {
+    "provider": "auto",
+    "model": "auto",
+    "load_policy": "on-demand"
+  },
+  "harness": {
+    "default": "auto"
+  },
+  "privacy": {
+    "cloud_ai_allowed": false,
+    "telemetry": false
+  }
+}
