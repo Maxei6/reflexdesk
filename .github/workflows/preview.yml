@@ -31,6 +31,9 @@ jobs:
 
       - run: npm install
 
+      - name: Generate platform icons
+        run: npm run prepare:icons
+
       - name: Build native installer
         uses: tauri-apps/tauri-action@v1
         with:
