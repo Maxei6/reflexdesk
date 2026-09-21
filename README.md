@@ -1,5 +1,9 @@
 # 🧠⚡ ReflexDesk
 
+<p align="center">
+  <img src="assets/reflexdesk-thumbnail.webp" alt="ReflexDesk — Your computer, with reflexes" width="100%" />
+</p>
+
 > **Your computer, with reflexes.**
 
 **Instant voice control for your computer, browser, and AI agents — local, private, and fully offline when you want it.**
