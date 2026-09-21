@@ -19,6 +19,7 @@ const required = [
   "src/overlay.js",
   "src-tauri/src/lib.rs",
   "README.md",
+  "assets/reflexdesk-icon.svg",
 ];
 for (const path of required) accessSync(path);
 
