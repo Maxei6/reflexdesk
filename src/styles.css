@@ -1,0 +1,46 @@
+:root {
+  color-scheme: dark;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: #050505; color: #f5f5f5;
+}
+* { box-sizing: border-box; }
+body { margin: 0; min-height: 100vh; background: radial-gradient(circle at 75% 10%, #171717 0, #050505 38%, #020202 100%); }
+button, input, select { font: inherit; } button { cursor: pointer; }
+.shell { max-width: 1040px; margin: 0 auto; padding: 44px 42px 30px; }
+.topbar { display: flex; justify-content: space-between; align-items: flex-start; gap: 24px; }
+.eyebrow { font-size: 12px; letter-spacing: .32em; color: #7a7a7a; margin-bottom: 10px; }
+h1 { font-size: clamp(34px, 5vw, 58px); letter-spacing: -.055em; line-height: .98; margin: 0; font-weight: 520; }
+.master { background: rgba(255,255,255,.06); color: #ddd; border: 1px solid #292929; border-radius: 999px; padding: 11px 17px; display: flex; align-items: center; gap: 9px; }
+.master[aria-pressed="true"] { background: #f5f5f5; color: #050505; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: #555; }
+.master[aria-pressed="true"] .dot { background: #111; box-shadow: 0 0 14px rgba(255,255,255,.7); }
+.hero-panel { margin: 34px 0 24px; min-height: 230px; border: 1px solid #1f1f1f; border-radius: 26px; background: rgba(10,10,10,.72); display: grid; grid-template-columns: 270px 1fr; align-items: center; overflow: hidden; box-shadow: 0 24px 80px rgba(0,0,0,.35); }
+.orb-mini { height: 230px; display: grid; place-items: center; position: relative; }
+#miniOrb { width: 230px; height: 230px; }
+.hero-copy { padding: 30px 34px 30px 0; }
+.status-line { text-transform: uppercase; letter-spacing: .16em; font-size: 11px; color: #888; margin-bottom: 18px; }
+.transcript { font-size: 23px; line-height: 1.38; color: #e8e8e8; max-width: 610px; }
+kbd { font-size: 13px; border: 1px solid #333; background: #101010; padding: 3px 7px; border-radius: 7px; color: #aaa; }
+.grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.card { border: 1px solid #1f1f1f; border-radius: 20px; background: rgba(11,11,11,.78); padding: 20px; min-height: 210px; }
+.card-title { font-size: 16px; font-weight: 620; display: flex; gap: 9px; margin-bottom: 17px; }
+label { display: block; color: #8d8d8d; font-size: 12px; margin-top: 12px; }
+input, select { width: 100%; margin-top: 7px; background: #090909; border: 1px solid #272727; color: #e5e5e5; border-radius: 11px; padding: 10px 12px; outline: none; }
+input:focus, select:focus { border-color: #555; }
+.hint, .muted { color: #666; font-size: 12px; line-height: 1.5; }
+.harness-list { display: flex; flex-wrap: wrap; gap: 7px; min-height: 62px; }
+.harness-pill { border: 1px solid #292929; background: #0b0b0b; padding: 7px 10px; border-radius: 999px; font-size: 12px; }
+.harness-pill.online::before { content: "●"; margin-right: 6px; color: #eee; }
+.secondary { margin-top: 12px; border: 1px solid #282828; background: #0d0d0d; color: #bbb; border-radius: 10px; padding: 8px 12px; }
+.test-console { display: grid; grid-template-columns: 1fr auto; gap: 10px; margin-top: 14px; }
+.test-console input { margin: 0; padding: 14px 16px; border-radius: 14px; }
+.test-console button { border: 0; border-radius: 14px; background: #f2f2f2; color: #090909; padding: 0 20px; font-weight: 650; }
+footer { display: flex; justify-content: space-between; align-items: center; padding-top: 20px; }
+.badge { font-size: 12px; padding: 7px 10px; border: 1px solid #222; border-radius: 999px; background: #0b0b0b; }
+@media (max-width: 760px) {
+  .shell { padding: 28px 18px; }
+  .hero-panel { grid-template-columns: 1fr; }
+  .orb-mini { height: 190px; }
+  .hero-copy { padding: 0 24px 28px; }
+  .grid { grid-template-columns: 1fr; }
+}
