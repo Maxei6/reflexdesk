@@ -192,9 +192,11 @@ pub fn run() {
                         return;
                     }
                     let state = app.state::<RuntimeState>();
-                    if let Ok(current) = state.active.lock().map(|value| *value) {
-                        let _ = apply_listening(app, &state, !current);
-                    }
+                    let current = match state.active.lock() {
+                        Ok(guard) => *guard,
+                        Err(_) => return,
+                    };
+                    let _ = apply_listening(app, &state, !current);
                 })
                 .build(),
         )
