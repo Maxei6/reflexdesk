@@ -1,0 +1,33 @@
+# Rust
+/target/
+**/target/
+
+# Node
+node_modules/
+dist/
+.vite/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# Models / runtime
+models/downloads/
+*.gguf
+*.safetensors
+*.onnx
+
+# Local config/state
+.env
+.env.*
+!.env.example
+.reflexdesk/
+*.db
+*.sqlite*
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
