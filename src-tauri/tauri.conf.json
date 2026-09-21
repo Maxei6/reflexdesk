@@ -45,7 +45,8 @@
         "shadow": false,
         "visible": false
       }
-    ]
+    ],
+    "macOSPrivateApi": true
   },
   "bundle": {
     "active": true,
@@ -54,6 +55,8 @@
     "longDescription": "ReflexDesk turns speech into fast local desktop actions and can hand complex work to local planners or AI harnesses.",
     "category": "Productivity",
     "copyright": "Copyright © 2026 ReflexDesk contributors",
-    "icon": ["icons/icon.png"]
+    "icon": [
+      "icons/icon.png"
+    ]
   }
 }
