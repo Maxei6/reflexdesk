@@ -10,7 +10,13 @@
     "frontendDist": "../dist"
   },
   "app": {
-    "security": { "csp": null },
+    "security": {
+      "csp": null,
+      "headers": {
+        "Cross-Origin-Opener-Policy": "same-origin",
+        "Cross-Origin-Embedder-Policy": "require-corp"
+      }
+    },
     "windows": [
       {
         "label": "main",
@@ -47,6 +53,7 @@
     "shortDescription": "Local voice control for your computer and AI agents",
     "longDescription": "ReflexDesk turns speech into fast local desktop actions and can hand complex work to local planners or AI harnesses.",
     "category": "Productivity",
-    "copyright": "Copyright © 2026 ReflexDesk contributors"
+    "copyright": "Copyright © 2026 ReflexDesk contributors",
+    "icon": ["icons/icon.png"]
   }
 }
