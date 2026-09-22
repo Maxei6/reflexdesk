@@ -1,74 +1,20 @@
 import { createHash } from "node:crypto";
-import { chmod, cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { existsSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 
-const VERSION = "v0.8.35";
-const BASE = "https://github.com/CrispStrobe/CrispASR/releases/download/" + VERSION;
+const manifestPath = path.resolve("models/registry.json");
+const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+const crispRuntime = manifest.runtimes?.crispasr;
+if (!crispRuntime) {
+  throw new Error("models/registry.json missing canonical runtimes.crispasr manifest entry");
+}
 
-const TARGETS = {
-  "win32:x64": [
-    {
-      archive: "crispasr-windows-x86_64-cpu.zip",
-      sha256: "fb812ef200ffcf7de55e9be900a39a440c83a3facb09d7df9020d5a3b56ff280",
-      binary: "crispasr.exe",
-      outputDir: "crispasr",
-      format: "zip",
-    },
-    {
-      archive: "crispasr-windows-x86_64-cpu-legacy.zip",
-      sha256: "954abf152b522c5a4cf14f289e3a243de5ad8b76dc8e771912c9d0f352d62506",
-      binary: "crispasr.exe",
-      outputDir: "crispasr-legacy",
-      format: "zip",
-    },
-  ],
-  "linux:x64": [
-    {
-      archive: "crispasr-linux-x86_64.tar.gz",
-      sha256: "2a9982f69c8ee714cab81d8697ef8fb76878ee76eeb878cf65ddce1e443f9ff9",
-      binary: "crispasr",
-      outputDir: "crispasr",
-      format: "tar",
-    },
-    {
-      archive: "crispasr-linux-x86_64-cpu-legacy.tar.gz",
-      sha256: "37e5a1adf91b06c400a9da391cfa05aeec9e2aa7e393677c2227b1043a619c8d",
-      binary: "crispasr",
-      outputDir: "crispasr-legacy",
-      format: "tar",
-    },
-  ],
-  "linux:arm64": [
-    {
-      archive: "crispasr-linux-arm64.tar.gz",
-      sha256: "5b1ae7df881d09bed899ad67e8cabb7241f5664c891a64071a952fb742747238",
-      binary: "crispasr",
-      outputDir: "crispasr",
-      format: "tar",
-    },
-  ],
-  "darwin:x64": [
-    {
-      archive: "crispasr-macos.tar.gz",
-      sha256: "0fa1aca0f102c2ea428a357eef143843a19bc122020bfa71cc3b4f984d8ecdf8",
-      binary: "crispasr",
-      outputDir: "crispasr",
-      format: "tar",
-    },
-  ],
-  "darwin:arm64": [
-    {
-      archive: "crispasr-macos.tar.gz",
-      sha256: "0fa1aca0f102c2ea428a357eef143843a19bc122020bfa71cc3b4f984d8ecdf8",
-      binary: "crispasr",
-      outputDir: "crispasr",
-      format: "tar",
-    },
-  ],
-};
+const VERSION = crispRuntime.version;
+const BASE = crispRuntime.base_url;
+const TARGETS = crispRuntime.targets;
 
 const platformKey = process.platform + ":" + process.arch;
 const targets = TARGETS[platformKey];
@@ -135,6 +81,7 @@ async function extractArchive(target, archivePath, extractDir) {
 
 async function downloadAndPrepare(target) {
   const temp = await mkdtemp(path.join(tmpdir(), "reflexdesk-crispasr-"));
+  const stagingArchive = path.join(temp, target.archive + ".staging");
   const archivePath = path.join(temp, target.archive);
   const extractDir = path.join(temp, "extract");
   await mkdir(extractDir, { recursive: true });
@@ -145,7 +92,11 @@ async function downloadAndPrepare(target) {
     if (!response.ok) throw new Error("CrispASR download failed: HTTP " + response.status);
 
     const bytes = Buffer.from(await response.arrayBuffer());
-    const digest = createHash("sha256").update(bytes).digest("hex");
+    await writeFile(stagingArchive, bytes);
+
+    // Rehash from disk to verify integrity of written archive
+    const diskBytes = await readFile(stagingArchive);
+    const digest = createHash("sha256").update(diskBytes).digest("hex");
     if (digest !== target.sha256) {
       throw new Error(
         "CrispASR checksum mismatch for " + target.archive
@@ -153,30 +104,56 @@ async function downloadAndPrepare(target) {
       );
     }
 
-    await writeFile(archivePath, bytes);
+    // Atomic rename of staged archive
+    await rename(stagingArchive, archivePath);
     await extractArchive(target, archivePath, extractDir);
 
     const binary = findFile(target.binary, extractDir);
     if (!binary) throw new Error(target.binary + " not found in " + target.archive);
 
     const sourceRuntimeDir = path.dirname(binary);
+    const stagingDir = path.join(resources, target.outputDir + ".staging");
     const destinationDir = path.join(resources, target.outputDir);
-    await rm(destinationDir, { recursive: true, force: true });
-    await cp(sourceRuntimeDir, destinationDir, { recursive: true });
 
-    const destinationBinary = path.join(destinationDir, target.binary);
-    if (process.platform !== "win32") await chmod(destinationBinary, 0o755);
+    // Stage runtime directory
+    await rm(stagingDir, { recursive: true, force: true });
+    await cp(sourceRuntimeDir, stagingDir, { recursive: true });
 
-    const smoke = spawnSync(destinationBinary, ["--version"], {
-      cwd: destinationDir,
+    const stagingBinary = path.join(stagingDir, target.binary);
+    if (process.platform !== "win32") await chmod(stagingBinary, 0o755);
+
+    const smoke = spawnSync(stagingBinary, ["--version"], {
+      cwd: stagingDir,
       encoding: "utf8",
       env: process.env,
     });
     if (smoke.status !== 0) {
+      await rm(stagingDir, { recursive: true, force: true });
       throw new Error(
         "Prepared CrispASR runtime failed --version: "
           + String(smoke.stderr || smoke.stdout || "unknown error"),
       );
+    }
+
+    // Atomic activation with backup rollback
+    const backupDir = path.join(resources, target.outputDir + ".old");
+    await rm(backupDir, { recursive: true, force: true });
+    if (existsSync(destinationDir)) {
+      try {
+        await rename(destinationDir, backupDir);
+      } catch {
+        await rm(destinationDir, { recursive: true, force: true });
+      }
+    }
+
+    try {
+      await rename(stagingDir, destinationDir);
+      await rm(backupDir, { recursive: true, force: true });
+    } catch (renameErr) {
+      if (existsSync(backupDir) && !existsSync(destinationDir)) {
+        try { await rename(backupDir, destinationDir); } catch {}
+      }
+      throw renameErr;
     }
 
     console.log("Prepared " + target.outputDir + " from " + target.archive);
@@ -192,8 +169,9 @@ if (await verifyExisting()) {
 
 for (const target of targets) await downloadAndPrepare(target);
 
+const tempMetadataPath = metadataPath + ".tmp";
 await writeFile(
-  metadataPath,
+  tempMetadataPath,
   JSON.stringify(
     {
       runtime: "CrispASR",
@@ -210,11 +188,12 @@ await writeFile(
       }),
       stt_model: "nvidia/nemotron-3.5-asr-streaming-0.6b",
       model_runtime: "cstr/nemotron-3.5-asr-streaming-GGUF / Q4_K",
-      model_download: "first voice use; cached by CrispASR",
+      model_download: "managed by ModelManager; verified and cached",
     },
     null,
     2,
   ) + "\n",
 );
+await rename(tempMetadataPath, metadataPath);
 
 console.log("Prepared pinned CrispASR runtime for " + platformKey);

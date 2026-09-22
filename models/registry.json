@@ -1,49 +1,203 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "selection_policy": {
     "prefer_offline": true,
     "benchmark_before_select": true,
     "minimum_tool_correctness": null,
     "stt_default": "nemotron-3.5-asr-streaming-0.6b"
   },
+  "runtimes": {
+    "crispasr": {
+      "version": "v0.8.35",
+      "base_url": "https://github.com/CrispStrobe/CrispASR/releases/download/v0.8.35",
+      "targets": {
+        "win32:x64": [
+          {
+            "archive": "crispasr-windows-x86_64-cpu.zip",
+            "sha256": "fb812ef200ffcf7de55e9be900a39a440c83a3facb09d7df9020d5a3b56ff280",
+            "binary": "crispasr.exe",
+            "outputDir": "crispasr",
+            "format": "zip"
+          },
+          {
+            "archive": "crispasr-windows-x86_64-cpu-legacy.zip",
+            "sha256": "954abf152b522c5a4cf14f289e3a243de5ad8b76dc8e771912c9d0f352d62506",
+            "binary": "crispasr.exe",
+            "outputDir": "crispasr-legacy",
+            "format": "zip"
+          }
+        ],
+        "linux:x64": [
+          {
+            "archive": "crispasr-linux-x86_64.tar.gz",
+            "sha256": "2a9982f69c8ee714cab81d8697ef8fb76878ee76eeb878cf65ddce1e443f9ff9",
+            "binary": "crispasr",
+            "outputDir": "crispasr",
+            "format": "tar"
+          },
+          {
+            "archive": "crispasr-linux-x86_64-cpu-legacy.tar.gz",
+            "sha256": "37e5a1adf91b06c400a9da391cfa05aeec9e2aa7e393677c2227b1043a619c8d",
+            "binary": "crispasr",
+            "outputDir": "crispasr-legacy",
+            "format": "tar"
+          }
+        ],
+        "linux:arm64": [
+          {
+            "archive": "crispasr-linux-arm64.tar.gz",
+            "sha256": "5b1ae7df881d09bed899ad67e8cabb7241f5664c891a64071a952fb742747238",
+            "binary": "crispasr",
+            "outputDir": "crispasr",
+            "format": "tar"
+          }
+        ],
+        "darwin:x64": [
+          {
+            "archive": "crispasr-macos.tar.gz",
+            "sha256": "0fa1aca0f102c2ea428a357eef143843a19bc122020bfa71cc3b4f984d8ecdf8",
+            "binary": "crispasr",
+            "outputDir": "crispasr",
+            "format": "tar"
+          }
+        ],
+        "darwin:arm64": [
+          {
+            "archive": "crispasr-macos.tar.gz",
+            "sha256": "0fa1aca0f102c2ea428a357eef143843a19bc122020bfa71cc3b4f984d8ecdf8",
+            "binary": "crispasr",
+            "outputDir": "crispasr",
+            "format": "tar"
+          }
+        ]
+      }
+    }
+  },
   "models": [
     {
       "id": "nemotron-3.5-asr-streaming-0.6b",
       "role": "stt",
       "upstream": "nvidia/nemotron-3.5-asr-streaming-0.6b",
+      "revision": "61e58fbba2c97f6b8058e88dc959df7cd4ce150b",
+      "url": "https://huggingface.co/cstr/nemotron-3.5-asr-streaming-GGUF/resolve/61e58fbba2c97f6b8058e88dc959df7cd4ce150b/nemotron-3.5-asr-streaming-0.6b-q4_k.gguf",
+      "size_bytes": 408557984,
+      "sha256": null,
+      "sha256_reason": "Upstream nvidia/nemotron-3.5-asr-streaming-0.6b provides PyTorch/NeMo safetensors weights without official signed GGUF releases. CrispASR runtime consumes community GGUF conversion cstr/nemotron-3.5-asr-streaming-GGUF. Pending upstream cryptographic release signature, sha256 is null with recorded Git-LFS SHA256 verified.",
+      "recorded_sha256": "22480dd283a3bf1b39e9d2ab86c048b0c1654b2fc280e46627a4cbfded4b46fd",
+      "runtime_compat": "CrispASR >=v0.8.35",
+      "min_hardware": {
+        "arch": "x86_64, aarch64",
+        "min_ram_mb": 2048,
+        "recommended_ram_mb": 4096,
+        "cpu_features": ["avx2", "fma"],
+        "gpu_optional": true
+      },
+      "cache_path": "models/nemotron-3.5-asr-streaming-0.6b-q4_k.gguf",
+      "license": "OpenMDW-1.1",
+      "notice": "Nemotron 3.5 ASR Streaming 0.6B weights converted to GGUF format for CrispASR runtime. Base model licensed under OpenMDW-1.1 by NVIDIA Corporation.",
+      "replaces": null,
       "runtime": "CrispASR v0.8.35",
       "runtime_model": "cstr/nemotron-3.5-asr-streaming-GGUF / Q4_K",
-      "approximate_download_mb": 458,
-      "license": "OpenMDW-1.1",
+      "approximate_download_mb": 390,
       "status": "default"
     },
     {
       "id": "moonshine-medium-streaming",
       "role": "stt",
       "upstream": "moonshine-ai/moonshine",
-      "runtime": "@moonshine-ai/moonshine-wasm",
+      "revision": "main",
+      "url": "https://huggingface.co/moonshine-ai/moonshine",
+      "size_bytes": null,
+      "sha256": null,
+      "sha256_reason": "Bundled/WASM runtime checkpoint resolution deferred to Moonshine fallback activation.",
+      "recorded_sha256": null,
+      "runtime_compat": "@moonshine-ai/moonshine-wasm",
+      "min_hardware": {
+        "arch": "any",
+        "min_ram_mb": 1024,
+        "recommended_ram_mb": 2048,
+        "cpu_features": [],
+        "gpu_optional": true
+      },
+      "cache_path": "models/moonshine-medium",
       "license": "verify exact checkpoint",
+      "notice": "Moonshine fallback speech recognition model.",
+      "replaces": null,
+      "runtime": "@moonshine-ai/moonshine-wasm",
       "status": "fallback"
     },
     {
       "id": "laya-english",
       "role": "reflex",
       "upstream": "convaiinnovations/laya",
-      "runtime": "python-sidecar",
+      "revision": "main",
+      "url": "https://github.com/convaiinnovations/laya",
+      "size_bytes": null,
+      "sha256": null,
+      "sha256_reason": "Python sidecar runtime manages internal weights.",
+      "recorded_sha256": null,
+      "runtime_compat": "python-sidecar",
+      "min_hardware": {
+        "arch": "any",
+        "min_ram_mb": 1024,
+        "recommended_ram_mb": 2048,
+        "cpu_features": [],
+        "gpu_optional": true
+      },
+      "cache_path": "models/laya-english",
       "license": "Apache-2.0",
+      "notice": "Laya fast intent classifier.",
+      "replaces": null,
+      "runtime": "python-sidecar",
       "status": "optional"
     },
     {
       "id": "laya-multilingual",
       "role": "reflex",
       "upstream": "convaiinnovations/laya",
-      "runtime": "python-sidecar",
+      "revision": "main",
+      "url": "https://github.com/convaiinnovations/laya",
+      "size_bytes": null,
+      "sha256": null,
+      "sha256_reason": "Python sidecar runtime manages internal weights.",
+      "recorded_sha256": null,
+      "runtime_compat": "python-sidecar",
+      "min_hardware": {
+        "arch": "any",
+        "min_ram_mb": 1024,
+        "recommended_ram_mb": 2048,
+        "cpu_features": [],
+        "gpu_optional": true
+      },
+      "cache_path": "models/laya-multilingual",
       "license": "Apache-2.0",
+      "notice": "Laya multilingual intent classifier.",
+      "replaces": null,
+      "runtime": "python-sidecar",
       "status": "optional"
     },
     {
       "id": "local-openai-compatible",
       "role": "planner",
+      "upstream": "local-host-endpoint",
+      "revision": "external",
+      "url": "http://127.0.0.1:11434/v1/chat/completions",
+      "size_bytes": null,
+      "sha256": null,
+      "sha256_reason": "External user-hosted inference server.",
+      "recorded_sha256": null,
+      "runtime_compat": "localhost-http",
+      "min_hardware": {
+        "arch": "any",
+        "min_ram_mb": 4096,
+        "recommended_ram_mb": 8192,
+        "cpu_features": [],
+        "gpu_optional": true
+      },
+      "cache_path": null,
+      "license": "Various",
+      "notice": "Local OpenAI-compatible API interface (Ollama, LM Studio, llama.cpp).",
+      "replaces": null,
       "runtime": "localhost-http",
       "examples": [
         "llama.cpp",
@@ -56,6 +210,24 @@
       "id": "spark-x2.5",
       "role": "planner",
       "upstream": "verify exact chosen checkpoint before bundling",
+      "revision": "benchmark-candidate",
+      "url": null,
+      "size_bytes": null,
+      "sha256": null,
+      "sha256_reason": "Benchmark candidate pending evaluation.",
+      "recorded_sha256": null,
+      "runtime_compat": "CrispASR / llama.cpp",
+      "min_hardware": {
+        "arch": "any",
+        "min_ram_mb": 4096,
+        "recommended_ram_mb": 8192,
+        "cpu_features": [],
+        "gpu_optional": true
+      },
+      "cache_path": "models/spark-x2.5",
+      "license": "Pending evaluation",
+      "notice": "Candidate local planner model.",
+      "replaces": null,
       "status": "benchmark-candidate"
     }
   ]
