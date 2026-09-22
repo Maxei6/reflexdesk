@@ -30,7 +30,7 @@ A **stable public release must not be published** until all platform signing and
 - stable releases require a dedicated signed-release workflow
 - private keys are never committed to this repository
 - the update client must fail closed on invalid signatures
-- model/runtime downloads remain checksum-verified independently of app-update signing
+- pinned CrispASR runtime archives remain SHA-256 verified independently of app-update signing; model-weight integrity follows the selected upstream resolver and model distribution
 
 ## Current state
 
