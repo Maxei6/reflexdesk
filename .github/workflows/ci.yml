@@ -31,5 +31,6 @@ jobs:
           node-version: 22
       - run: npm install
       - run: npm run prepare:icons
+      - run: npm run prepare:stt
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo check --manifest-path src-tauri/Cargo.toml
