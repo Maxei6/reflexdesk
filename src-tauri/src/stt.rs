@@ -57,12 +57,40 @@ fn endpoint(path: &str) -> String {
     format!("http://127.0.0.1:{PORT}{path}")
 }
 
-fn runtime_candidates(app: &AppHandle) -> Vec<PathBuf> {
-    #[cfg(target_os = "windows")]
-    let name = "crispasr.exe";
-    #[cfg(not(target_os = "windows"))]
-    let name = "crispasr";
+fn preferred_runtime_name() -> &'static str {
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    {
+        if !(std::arch::is_x86_feature_detected!("avx2")
+            && std::arch::is_x86_feature_detected!("fma"))
+        {
+            return "crispasr-legacy.exe";
+        }
+        return "crispasr.exe";
+    }
 
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    {
+        if !(std::arch::is_x86_feature_detected!("avx2")
+            && std::arch::is_x86_feature_detected!("fma"))
+        {
+            return "crispasr-legacy";
+        }
+        return "crispasr";
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        return "crispasr.exe";
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        "crispasr"
+    }
+}
+
+fn runtime_candidates(app: &AppHandle) -> Vec<PathBuf> {
+    let name = preferred_runtime_name();
     let mut candidates = Vec::new();
 
     if let Ok(resource_dir) = app.path().resource_dir() {
