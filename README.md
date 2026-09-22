@@ -20,7 +20,7 @@
 > **“Open Spotify.”**  
 > **“Search for the latest local AI models.”**  
 > **“Run Codex on this repo.”**  
-> **“Stop.”**
+> **“Stop listening.”**
 
 ReflexDesk does not wake a giant LLM for every click. Known commands take the fast deterministic path. Harder work escalates only when it needs to.
 
@@ -168,7 +168,7 @@ Structured ACP/SDK control is the target. UI scraping is intentionally the last 
 - hardware benchmark + automatic CPU/GPU runtime selection
 - native accessibility trees
 - browser DOM / CDP control
-- full ACP harness adapters
+- full ACP harness adapters + interrupt / resume
 - reusable learned skills
 - signed / notarized installers
 
