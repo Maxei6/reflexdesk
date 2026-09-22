@@ -1,8 +1,11 @@
 mod harness;
 mod lifecycle;
+mod model_manager;
 mod policy;
+mod process;
 mod process_supervisor;
 mod redaction;
+mod security;
 mod settings;
 mod stt;
 mod tools;
@@ -10,6 +13,7 @@ mod transcript;
 mod tray;
 
 use lifecycle::{Phase, RuntimeSnapshot, RuntimeState};
+use model_manager::{ModelManager, ModelProgress, ModelStatus, DEFAULT_STT_MODEL_ID};
 use process_supervisor::ProcessSupervisor;
 use serde::Serialize;
 use settings::{AppSettings, SettingsState};
@@ -73,14 +77,15 @@ fn apply_autostart(app: &AppHandle, enabled: bool) -> Result<bool, String> {
         manager.enable().map_err(|e| e.to_string())?;
     } else {
         manager.disable().map_err(|e| e.to_string())?;
-    }
-    manager.is_enabled().map_err(|e| e.to_string())
-}
-
 fn set_listening_internal(app: &AppHandle, next: bool) -> Result<RuntimeSnapshot, String> {
     let runtime = app.state::<RuntimeState>();
     let current = runtime.snapshot();
 
+    if !next {
+        // Deterministic global cancel: stops capture, aborts the current
+        // action, and marks owned harness sessions interrupted.
+        policy::cancel_now("listening-stopped");
+    }
     if next {
         let app_settings = app.state::<SettingsState>().snapshot();
         let requires_native_stt = app_settings.stt_provider == "nemotron";
@@ -138,6 +143,28 @@ fn start_engine_background(app: AppHandle) {
 
     thread::spawn(move || {
         let state = app.state::<stt::SttState>();
+        let model_mgr = app.state::<ModelManager>();
+
+        // Model acquisition first: Ready requires a manager-verified Active
+        // artifact; STT health alone never yields Ready.
+        if !model_mgr.is_ready_for_engine(DEFAULT_STT_MODEL_ID) {
+            let app_handle = app.clone();
+            let res = model_mgr.download_and_activate(
+                DEFAULT_STT_MODEL_ID,
+                Some(move |progress: ModelProgress| {
+                    model_manager::emit_model_progress(&app_handle, &progress);
+                }),
+            );
+            if let Err(err) = res {
+                let _ = update_runtime(
+                    &app,
+                    Phase::Error,
+                    Some(format!("Model acquisition failed: {err}")),
+                );
+                show_main(&app);
+                return;
+            }
+        }
 
         if let Err(error) = stt::start(&app, &state) {
             let _ = update_runtime(&app, Phase::Error, Some(error));
@@ -154,7 +181,8 @@ fn start_engine_background(app: AppHandle) {
             }
 
             let status = stt::status(&app, &state);
-            if status.ready {
+            // Ready requires BOTH STT process health AND manager-verified Active.
+            if status.ready && model_mgr.is_ready_for_engine(DEFAULT_STT_MODEL_ID) {
                 let _ = update_runtime(&app, Phase::Ready, None);
                 let _ = app.emit("reflexdesk://engine-ready", status);
                 return;
@@ -205,15 +233,20 @@ fn start_watchdog(app: AppHandle) {
             && matches!(runtime.phase, Phase::Ready | Phase::Listening)
         {
             let stt_state = app.state::<stt::SttState>();
-            if !stt::status(&app, &stt_state).ready {
+            let model_mgr = app.state::<ModelManager>();
+            let engine_healthy = stt::status(&app, &stt_state).ready;
+            let model_active = model_mgr.is_ready_for_engine(DEFAULT_STT_MODEL_ID);
+
+            if !engine_healthy || !model_active {
                 if runtime.listening {
                     let _ = app.emit("reflexdesk://active", false);
                 }
-                let _ = update_runtime(
-                    &app,
-                    Phase::Degraded,
-                    Some("Speech engine stopped; ReflexDesk is restarting it.".into()),
-                );
+                let message = if !model_active {
+                    "Model artifact missing or corrupted; repairing...".into()
+                } else {
+                    "Speech engine stopped; ReflexDesk is restarting it.".into()
+                };
+                let _ = update_runtime(&app, Phase::Degraded, Some(message));
                 start_engine_background(app.clone());
             }
         }
@@ -225,7 +258,7 @@ fn shutdown_and_exit(app: &AppHandle) {
     let _ = app.emit("reflexdesk://active", false);
     let stt_state = app.state::<stt::SttState>();
     let _ = stt::shutdown(&stt_state);
-    app.state::<ProcessSupervisor>().terminate_all();
+    app.state::<ProcessSupervisor>().terminate_all_owned();
     app.exit(0);
 }
 
@@ -304,8 +337,9 @@ fn complete_setup(
     benchmark_ms: u64,
 ) -> Result<AppSettings, String> {
     let stt_state = app.state::<stt::SttState>();
-    if !stt::status(&app, &stt_state).ready {
-        return Err("The local speech engine is not ready yet.".into());
+    let model_mgr = app.state::<ModelManager>();
+    if !stt::status(&app, &stt_state).ready || !model_mgr.is_ready_for_engine(DEFAULT_STT_MODEL_ID) {
+        return Err("The local speech engine and model are not ready yet.".into());
     }
 
     let mut settings = state.snapshot();
@@ -330,10 +364,36 @@ fn reset_setup(
     settings.voice_benchmark_ms = None;
     settings::save(&app, &settings)?;
     state.replace(settings.clone())?;
+    let stt_state = app.state::<stt::SttState>();
+    let _ = stt::shutdown(&stt_state);
     let _ = set_listening_internal(&app, false);
     let _ = update_runtime(&app, Phase::SetupRequired, None);
     show_main(&app);
     Ok(settings)
+}
+
+#[tauri::command]
+fn get_model_status(model_mgr: State<'_, ModelManager>, model_id: Option<String>) -> ModelStatus {
+    let id = model_id.unwrap_or_else(|| DEFAULT_STT_MODEL_ID.to_string());
+    model_mgr.get_status(&id)
+}
+
+#[tauri::command]
+fn get_model_cache_size(model_mgr: State<'_, ModelManager>) -> u64 {
+    model_mgr.total_cache_bytes()
+}
+
+#[tauri::command]
+fn repair_model(app: AppHandle, model_mgr: State<'_, ModelManager>) -> Result<String, String> {
+    let app_handle = app.clone();
+    let path = model_mgr.repair(
+        DEFAULT_STT_MODEL_ID,
+        Some(move |progress: ModelProgress| {
+            model_manager::emit_model_progress(&app_handle, &progress);
+        }),
+    )?;
+    start_engine_background(app);
+    Ok(path.to_string_lossy().to_string())
 }
 
 #[tauri::command]
@@ -372,39 +432,155 @@ fn toggle_listening(app: AppHandle) -> Result<RuntimeSnapshot, String> {
     set_listening_internal(&app, !current.listening)
 }
 
+/// Single internal execution path. Every action flows through
+/// validate -> authorize -> pre-cancel -> execute -> verify -> post-cancel.
+/// There is no other route to `tools::execute`.
+fn execute_verified(
+    app: &AppHandle,
+    runtime: &RuntimeState,
+    supervisor: &ProcessSupervisor,
+    settings: &AppSettings,
+    envelope: &policy::ActionEnvelope,
+    raw_text: Option<&str>,
+) -> policy::ActionExecutionResult {
+    let denied = |reason: String| policy::ActionExecutionResult {
+        status: "deny".into(),
+        output: None,
+        verification: None,
+        confirmation_id: None,
+        tool: Some(envelope.tool.clone()),
+        risk: Some(envelope.risk),
+        args_summary: None,
+        reason: Some(reason),
+    };
+
+    // 1. Policy decision: validation, negation, authorization, pre-cancel.
+    let sanitized_args = match policy::decide_and_prepare_with_settings(envelope, raw_text, settings) {
+        policy::PolicyDecision::Denied { reason } => return denied(reason),
+        policy::PolicyDecision::NeedConfirm { confirmation_id, tool, risk, args_summary } => {
+            return policy::ActionExecutionResult {
+                status: "confirm".into(),
+                output: None,
+                verification: None,
+                confirmation_id: Some(confirmation_id),
+                tool: Some(tool),
+                risk: Some(risk),
+                args_summary: Some(args_summary),
+                reason: None,
+            };
+        }
+        policy::PolicyDecision::ExecuteNow { sanitized_args } => sanitized_args,
+    };
+
+    // 2. Pre-execution cancellation check.
+    if policy::is_cancelled(&envelope.session_id) {
+        let mut res = denied("action-cancelled".into());
+        res.status = "cancelled".into();
+        return res;
+    }
+
+    let was_listening = runtime.snapshot().listening;
+    let _ = update_runtime(app, Phase::Executing, None);
+    let _ = app.emit("reflexdesk://visual-state", "executing");
+    let settle = |app: &AppHandle, was_listening: bool| {
+        let next = if was_listening { Phase::Listening } else { Phase::Ready };
+        let _ = update_runtime(app, next, None);
+    };
+
+    // 3. Execution via the tool registry surface.
+    let tool_res = match tools::execute(&envelope.tool, &sanitized_args, supervisor) {
+        Ok(res) => res,
+        Err(err) => {
+            let _ = app.emit(
+                "reflexdesk://visual-state",
+                serde_json::json!({ "state": "error", "message": &err }),
+            );
+            settle(app, was_listening);
+            let mut res = denied(err);
+            res.status = "error".into();
+            return res;
+        }
+    };
+
+    // 4. Post-action verification re-inspection.
+    if let Err(verify_err) = policy::verify_stub(&envelope.verification) {
+        let _ = app.emit(
+            "reflexdesk://visual-state",
+            serde_json::json!({ "state": "error", "message": &verify_err }),
+        );
+        settle(app, was_listening);
+        let mut res = denied(verify_err);
+        res.status = "error".into();
+        return res;
+    }
+
+    // 5. Delayed-completion re-check: never report success for cancelled work.
+    if policy::is_cancelled(&envelope.session_id) {
+        settle(app, was_listening);
+        let mut res = denied("action-cancelled".into());
+        res.status = "cancelled".into();
+        return res;
+    }
+
+    let _ = app.emit("reflexdesk://visual-state", "success");
+    settle(app, was_listening);
+    policy::ActionExecutionResult {
+        status: "success".into(),
+        output: serde_json::to_value(&tool_res).ok(),
+        verification: Some(serde_json::json!({ "ok": true })),
+        confirmation_id: None,
+        tool: Some(envelope.tool.clone()),
+        risk: Some(envelope.risk),
+        args_summary: None,
+        reason: None,
+    }
+}
+
 #[tauri::command]
-fn execute_tool(
+fn request_action(
     app: AppHandle,
     runtime: State<'_, RuntimeState>,
     supervisor: State<'_, ProcessSupervisor>,
-    name: String,
-    args: serde_json::Value,
-) -> Result<tools::ToolResult, String> {
-    let was_listening = runtime.snapshot().listening;
-    let _ = update_runtime(&app, Phase::Executing, None);
-    let _ = app.emit("reflexdesk://visual-state", "executing");
+    settings_state: State<'_, SettingsState>,
+    envelope: policy::ActionEnvelope,
+    raw_text: Option<String>,
+) -> Result<policy::ActionExecutionResult, String> {
+    let settings = settings_state.snapshot();
+    Ok(execute_verified(&app, &runtime, &supervisor, &settings, &envelope, raw_text.as_deref()))
+}
 
-    let result = tools::execute(&name, &args, &supervisor);
-
-    match &result {
-        Ok(_) => {
-            let _ = app.emit("reflexdesk://visual-state", "success");
-        }
-        Err(error) => {
-            let _ = app.emit(
-                "reflexdesk://visual-state",
-                serde_json::json!({ "state": "error", "message": error }),
-            );
-        }
+#[tauri::command]
+fn confirm_action(
+    app: AppHandle,
+    runtime: State<'_, RuntimeState>,
+    supervisor: State<'_, ProcessSupervisor>,
+    settings_state: State<'_, SettingsState>,
+    confirmation_id: String,
+    approve: bool,
+) -> Result<policy::ActionExecutionResult, String> {
+    if !policy::is_confirmation_id(&confirmation_id) {
+        return Err("invalid-args: malformed confirmation id".into());
     }
+    let settings = settings_state.snapshot();
+    match policy::resolve_confirmation(&confirmation_id, approve) {
+        Some(envelope) => Ok(execute_verified(&app, &runtime, &supervisor, &settings, &envelope, None)),
+        None => Ok(policy::ActionExecutionResult {
+            status: "deny".into(),
+            output: None,
+            verification: None,
+            confirmation_id: Some(confirmation_id),
+            tool: None,
+            risk: None,
+            args_summary: None,
+            reason: Some(if approve { "confirmation-expired-or-not-found".into() } else { "user-denied".into() }),
+        }),
+    }
+}
 
-    let next = if was_listening {
-        Phase::Listening
-    } else {
-        Phase::Ready
-    };
-    let _ = update_runtime(&app, next, None);
-    result
+#[tauri::command]
+fn cancel_session(session_id: String) -> Result<(), String> {
+    policy::cancel_session(&session_id);
+    Ok(())
 }
 
 #[tauri::command]
@@ -414,8 +590,8 @@ fn laya_route(
     endpoint: String,
     text: String,
 ) -> Result<serde_json::Value, String> {
-    if !(endpoint.starts_with("http://127.0.0.1") || endpoint.starts_with("http://localhost")) {
-        return Err("Laya endpoint must be localhost".into());
+    if !security::is_loopback_url(&endpoint) {
+        return Err("laya endpoint must be a local loopback URL".into());
     }
 
     let was_listening = runtime.snapshot().listening;
@@ -454,13 +630,11 @@ fn planner_route(
     text: String,
     allow_remote: bool,
 ) -> Result<serde_json::Value, String> {
-    let local = endpoint.starts_with("http://127.0.0.1")
-        || endpoint.starts_with("http://localhost");
-
-    if !local && !allow_remote {
-        return Err("remote planner blocked in offline mode".into());
-    }
-
+    // Remote endpoints require persisted user consent; a caller flag can
+    // never enable remote AI on its own. Loopback always passes.
+    let persisted_allow_online = app.state::<SettingsState>().snapshot().allow_online_ai;
+    security::check_remote_allowed(persisted_allow_online, allow_remote)?;
+    security::check_endpoint_allowed(&endpoint, persisted_allow_online)?;
     let was_listening = runtime.snapshot().listening;
     let _ = update_runtime(&app, Phase::Routing, None);
     let _ = app.emit("reflexdesk://visual-state", "thinking");
@@ -563,10 +737,12 @@ fn stt_transcribe(
     sample_rate: u32,
     language: String,
 ) -> Result<stt::Transcript, String> {
+    // IPC payload cap + 16 kHz allowlist + 100 ms–30 s bounds + language enum,
+    // enforced before the sample buffer is processed further.
+    security::check_transcript_bounds(samples.len() * 2, sample_rate, &language)?;
     let was_listening = runtime.snapshot().listening;
     let _ = update_runtime(&app, Phase::Transcribing, None);
     let _ = app.emit("reflexdesk://visual-state", "transcribing");
-
     let result = stt::transcribe(&app, &state, samples, sample_rate, language);
 
     let _ = update_runtime(
@@ -632,6 +808,9 @@ pub fn run() {
                         return;
                     }
                     let current = app.state::<RuntimeState>().snapshot();
+                    if current.listening {
+                        policy::cancel_now("hotkey-cancelled");
+                    }
                     let _ = set_listening_internal(app, !current.listening);
                 })
                 .build(),
@@ -647,6 +826,9 @@ pub fn run() {
         .setup(|app| {
             let loaded_settings = settings::load(app.handle());
             app.manage(SettingsState(Mutex::new(loaded_settings.clone())));
+            let model_mgr = ModelManager::default_manager()
+                .map_err(|e| format!("failed to initialize ModelManager: {e}"))?;
+            app.manage(model_mgr);
 
             tray::setup(app)?;
 
@@ -701,10 +883,15 @@ pub fn run() {
             prepare_engine,
             complete_setup,
             reset_setup,
+            get_model_status,
+            get_model_cache_size,
+            repair_model,
             get_system_profile,
             set_listening,
             toggle_listening,
-            execute_tool,
+            request_action,
+            confirm_action,
+            cancel_session,
             laya_route,
             planner_route,
             detect_harnesses,

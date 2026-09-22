@@ -1,10 +1,13 @@
+use crate::process_supervisor::{OwnershipClass, ProcessId, ProcessSpec, ProcessSupervisor};
 use serde::Serialize;
 use std::{
     io::{BufRead, BufReader},
     net::TcpListener,
     path::PathBuf,
-    process::{Child, Command, Stdio},
-    sync::Mutex,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Mutex,
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -20,27 +23,26 @@ struct LocalEndpoint {
 }
 
 pub struct SttState {
-    child: Mutex<Option<Child>>,
+    process_id: Mutex<Option<ProcessId>>,
     endpoint: Mutex<Option<LocalEndpoint>>,
+    starting: AtomicBool,
+    shutting_down: AtomicBool,
 }
 
 impl Default for SttState {
     fn default() -> Self {
         Self {
-            child: Mutex::new(None),
+            process_id: Mutex::new(None),
             endpoint: Mutex::new(None),
+            starting: AtomicBool::new(false),
+            shutting_down: AtomicBool::new(false),
         }
     }
 }
 
 impl Drop for SttState {
     fn drop(&mut self) {
-        if let Ok(mut guard) = self.child.lock() {
-            if let Some(mut child) = guard.take() {
-                let _ = child.kill();
-                let _ = child.wait();
-            }
-        }
+        let _ = shutdown(self);
     }
 }
 
@@ -157,19 +159,18 @@ fn health(state: &SttState) -> bool {
 }
 
 fn child_running(state: &SttState) -> bool {
-    let Ok(mut guard) = state.child.lock() else {
+    let Ok(mut guard) = state.process_id.lock() else {
         return false;
     };
-    let Some(child) = guard.as_mut() else {
+    let Some(id) = *guard else {
         return false;
     };
 
-    match child.try_wait() {
-        Ok(None) => true,
-        Ok(Some(_)) | Err(_) => {
-            *guard = None;
-            false
-        }
+    if ProcessSupervisor::is_alive_global(id) {
+        true
+    } else {
+        *guard = None;
+        false
     }
 }
 
@@ -190,12 +191,18 @@ fn allocate_endpoint() -> Result<LocalEndpoint, String> {
 
 pub fn status(app: &AppHandle, state: &SttState) -> SttStatus {
     let endpoint = endpoint_snapshot(state);
+    // Ready requires manager-verified Active artifact; process health alone
+    // never yields Ready. Missing manager state fails closed (not ready).
+    let model_ready = app
+        .try_state::<crate::model_manager::ModelManager>()
+        .map(|mgr| mgr.is_ready_for_engine(crate::model_manager::DEFAULT_STT_MODEL_ID))
+        .unwrap_or(false);
     SttStatus {
         provider: PROVIDER,
         model: MODEL,
         runtime_found: runtime_path(app).is_some(),
         running: child_running(state),
-        ready: health(state),
+        ready: health(state) && model_ready,
         endpoint: endpoint.map(|value| format!("127.0.0.1:{}", value.port)),
     }
 }
@@ -233,30 +240,44 @@ pub fn start(app: &AppHandle, state: &SttState) -> Result<SttStatus, String> {
     if child_running(state) {
         return Ok(status(app, state));
     }
-
     shutdown(state)?;
+    state.shutting_down.store(false, Ordering::SeqCst);
+    state.starting.store(true, Ordering::SeqCst);
 
     let binary = runtime_path(app).ok_or_else(|| {
+        state.starting.store(false, Ordering::SeqCst);
         "CrispASR runtime is missing. Reinstall ReflexDesk or repair the installation."
             .to_string()
     })?;
 
-    let endpoint = allocate_endpoint()?;
+    let endpoint = allocate_endpoint().map_err(|e| {
+        state.starting.store(false, Ordering::SeqCst);
+        e
+    })?;
     let threads = std::thread::available_parallelism()
         .map(|n| n.get().min(8).max(2))
         .unwrap_or(4);
 
     let runtime_dir = binary
         .parent()
-        .ok_or_else(|| "invalid CrispASR runtime path".to_string())?
+        .ok_or_else(|| {
+            state.starting.store(false, Ordering::SeqCst);
+            "invalid CrispASR runtime path".to_string()
+        })?
         .to_path_buf();
 
     let port = endpoint.port.to_string();
     let thread_count = threads.to_string();
 
-    let mut command = Command::new(&binary);
-    command
-        .current_dir(&runtime_dir)
+    // Pre-spawn check: abort if shutdown was initiated
+    if state.shutting_down.load(Ordering::SeqCst) {
+        state.starting.store(false, Ordering::SeqCst);
+        return Err("ReflexDesk STT start cancelled: shutting down".to_string());
+    }
+
+    let supervisor = app.state::<ProcessSupervisor>();
+    let spec = ProcessSpec::new(&binary, OwnershipClass::Internal)
+        .cwd(&runtime_dir)
         .args([
             "--server",
             "--host",
@@ -276,26 +297,30 @@ pub fn start(app: &AppHandle, state: &SttState) -> Result<SttStatus, String> {
         .env("CRISPASR_API_KEYS", &endpoint.token)
         .env("CRISPASR_NEMOTRON_CONTEXT_PRESET", "0")
         .env("CRISPASR_NEMOTRON_STREAMING", "1")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .with_piped_stdio(true);
 
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        command.creation_flags(CREATE_NO_WINDOW);
+    let proc_id = match supervisor.spawn(spec) {
+        Ok(id) => id,
+        Err(e) => {
+            state.starting.store(false, Ordering::SeqCst);
+            return Err(format!("failed to start local speech engine: {e}"));
+        }
+    };
+
+    // Post-spawn check: abort if shutdown occurred during spawn
+    if state.shutting_down.load(Ordering::SeqCst) {
+        state.starting.store(false, Ordering::SeqCst);
+        let _ = supervisor.terminate_owned(proc_id);
+        return Err("ReflexDesk STT start aborted: shutting down".to_string());
     }
 
-    let mut child = command
-        .spawn()
-        .map_err(|e| format!("failed to start local speech engine: {e}"))?;
-
-    if let Some(stdout) = child.stdout.take() {
-        forward_logs(stdout, app.clone(), "stdout");
-    }
-    if let Some(stderr) = child.stderr.take() {
-        forward_logs(stderr, app.clone(), "stderr");
+    if let Some((stdout, stderr)) = supervisor.take_stdio(proc_id) {
+        if let Some(stdout) = stdout {
+            forward_logs(stdout, app.clone(), "stdout");
+        }
+        if let Some(stderr) = stderr {
+            forward_logs(stderr, app.clone(), "stderr");
+        }
     }
 
     *state
@@ -304,10 +329,11 @@ pub fn start(app: &AppHandle, state: &SttState) -> Result<SttStatus, String> {
         .map_err(|_| "STT endpoint lock poisoned".to_string())? = Some(endpoint);
 
     *state
-        .child
+        .process_id
         .lock()
-        .map_err(|_| "STT process lock poisoned".to_string())? = Some(child);
+        .map_err(|_| "STT process lock poisoned".to_string())? = Some(proc_id);
 
+    state.starting.store(false, Ordering::SeqCst);
     let _ = app.emit(
         "reflexdesk://stt-status",
         serde_json::json!({
@@ -419,10 +445,11 @@ pub fn transcribe(
 }
 
 pub fn shutdown(state: &SttState) -> Result<(), String> {
-    if let Ok(mut guard) = state.child.lock() {
-        if let Some(mut child) = guard.take() {
-            let _ = child.kill();
-            let _ = child.wait();
+    state.shutting_down.store(true, Ordering::SeqCst);
+
+    if let Ok(mut guard) = state.process_id.lock() {
+        if let Some(id) = guard.take() {
+            ProcessSupervisor::terminate_process_global(id);
         }
     }
 
