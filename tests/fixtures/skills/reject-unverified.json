@@ -1,0 +1,75 @@
+{
+  "id": "reject-unverified",
+  "version": 2,
+  "name": "Unverified Step Skill",
+  "description": "Demonstrates halting execution at the first unverifiable step.",
+  "inputs": {},
+  "steps": [
+    {
+      "id": "valid-step-1",
+      "tool": "browser.search",
+      "args": {
+        "query": "ReflexDesk local voice control"
+      },
+      "source": "user",
+      "risk": "safe",
+      "capability": "browser.open",
+      "verification": {
+        "kind": "none",
+        "selector": null,
+        "expect": null,
+        "timeout_ms": 1000
+      }
+    },
+    {
+      "id": "unverifiable-step-2",
+      "tool": "browser.search",
+      "args": {
+        "query": "ReflexDesk unverified target"
+      },
+      "source": "user",
+      "risk": "safe",
+      "capability": "browser.open",
+      "verification": {
+        "kind": "impossible-unverifiable-verification-contract",
+        "selector": "invalid#selector",
+        "expect": "unreachable-state",
+        "timeout_ms": 100
+      }
+    },
+    {
+      "id": "unreachable-step-3",
+      "tool": "browser.search",
+      "args": {
+        "query": "Should never be executed"
+      },
+      "source": "user",
+      "risk": "safe",
+      "capability": "browser.open",
+      "verification": {
+        "kind": "none",
+        "selector": null,
+        "expect": null,
+        "timeout_ms": 1000
+      }
+    }
+  ],
+  "verification": {
+    "kind": "none",
+    "selector": null,
+    "expect": null,
+    "timeout_ms": 2000
+  },
+  "timeout_ms": 10000,
+  "cancel": {
+    "allow_cancel": true
+  },
+  "trust": {
+    "origin": "local",
+    "trusted": true,
+    "signature": null,
+    "permissions": ["browser.open"],
+    "imported_at": "2026-09-22T00:00:00Z"
+  },
+  "enabled": true
+}

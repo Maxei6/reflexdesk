@@ -18,6 +18,7 @@ mod stt;
 mod tools;
 mod transcript;
 mod tray;
+pub mod skills;
 
 use lifecycle::{Phase, RuntimeSnapshot, RuntimeState};
 use model_manager::{ModelManager, ModelProgress, ModelStatus, DEFAULT_STT_MODEL_ID};
@@ -589,7 +590,7 @@ fn execute_verified(
     let _ = app.emit("reflexdesk://visual-state", "success");
     observability::log_tool(&envelope.tool, "success", None, Some(&envelope.session_id), None);
     settle(app, was_listening);
-    policy::ActionExecutionResult {
+    let res = policy::ActionExecutionResult {
         status: "success".into(),
         output: serde_json::to_value(&tool_res).ok(),
         verification: Some(serde_json::json!({ "ok": true })),
@@ -598,7 +599,9 @@ fn execute_verified(
         risk: Some(envelope.risk),
         args_summary: None,
         reason: None,
-    }
+    };
+    skills::record_verified_action(envelope, &res);
+    res
 }
 
 #[tauri::command]
@@ -1113,6 +1116,96 @@ fn export_diagnostics(
 }
 
 
+// ---------------------------------------------------------------------------
+// Skills Automation Commands (Plan 18)
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+fn list_skills() -> Result<Vec<skills::SkillSummary>, String> {
+    Ok(skills::global_skill_store().list().iter().map(skills::SkillSummary::from).collect())
+}
+
+#[tauri::command]
+fn get_skill(id: String) -> Result<skills::SkillDefinition, String> {
+    skills::global_skill_store()
+        .get(&id)
+        .ok_or_else(|| format!("skill '{id}' not found"))
+}
+
+#[tauri::command]
+fn save_skill(skill: serde_json::Value) -> Result<skills::SkillDefinition, String> {
+    let validated = skills::validate_skill_definition(&skill)?;
+    skills::global_skill_store().save(validated.clone())?;
+    Ok(validated)
+}
+
+#[tauri::command]
+fn delete_skill(id: String) -> Result<bool, String> {
+    skills::global_skill_store().delete(&id)
+}
+
+#[tauri::command]
+fn execute_skill(
+    app: AppHandle,
+    runtime: State<'_, RuntimeState>,
+    supervisor: State<'_, ProcessSupervisor>,
+    settings_state: State<'_, SettingsState>,
+    id: String,
+    inputs: Option<std::collections::HashMap<String, serde_json::Value>>,
+    session_id: Option<String>,
+) -> Result<skills::SkillExecutionResult, String> {
+    let skill = skills::global_skill_store()
+        .get(&id)
+        .ok_or_else(|| format!("skill '{id}' not found"))?;
+    let sess = session_id.unwrap_or_else(|| format!("skill_exec_{}", policy::new_confirmation_id()));
+    let empty_inputs = std::collections::HashMap::new();
+    let user_inputs = inputs.as_ref().unwrap_or(&empty_inputs);
+    let settings = settings_state.snapshot();
+
+    let runner = |envelope: &policy::ActionEnvelope| -> policy::ActionExecutionResult {
+        execute_verified(&app, &runtime, &supervisor, &settings, envelope, None)
+    };
+
+    Ok(skills::execute_skill(&skill, user_inputs, &sess, &runner))
+}
+
+#[tauri::command]
+fn set_skill_enabled(id: String, enabled: bool) -> Result<(), String> {
+    skills::global_skill_store().set_enabled(&id, enabled)
+}
+
+#[tauri::command]
+fn import_skill(json_str: String, trusted: bool) -> Result<skills::SkillDefinition, String> {
+    skills::import_skill_bundle(&json_str, trusted)
+}
+
+#[tauri::command]
+fn export_skill(id: String) -> Result<String, String> {
+    skills::export_skill_bundle(&id)
+}
+
+#[tauri::command]
+fn start_skill_recording() -> Result<(), String> {
+    skills::global_recorder().start();
+    Ok(())
+}
+
+#[tauri::command]
+fn stop_skill_recording() -> Result<usize, String> {
+    let trace = skills::global_recorder().stop();
+    Ok(trace.len())
+}
+
+#[tauri::command]
+fn compile_skill_draft(id: String, name: String) -> Result<skills::SkillDefinition, String> {
+    skills::global_recorder().compile_draft(&id, &name)
+}
+
+#[tauri::command]
+fn get_skill_recording_status() -> Result<bool, String> {
+    Ok(skills::global_recorder().is_recording())
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -1258,6 +1351,18 @@ pub fn run() {
             disconnect_provider,
             get_provider_status,
             list_secret_metadata,
+            execute_skill,
+            list_skills,
+            get_skill,
+            save_skill,
+            delete_skill,
+            import_skill,
+            export_skill,
+            set_skill_enabled,
+            start_skill_recording,
+            stop_skill_recording,
+            compile_skill_draft,
+            get_skill_recording_status,
         ])
         .expect("error while running ReflexDesk");
 }

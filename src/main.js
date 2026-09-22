@@ -280,6 +280,7 @@ function showDashboard() {
   renderSettings();
   renderRuntime(runtime);
   refreshHarnesses();
+  refreshSkills();
   refreshDiagnostics();
   translateDom();
 }
@@ -453,6 +454,95 @@ async function refreshHarnesses() {
       .join("");
   } catch {
     $("harnessList").innerHTML = '<span class="muted">' + t("agents.check_failed") + '</span>';
+  }
+}
+
+let isSkillRecording = false;
+
+async function refreshSkills() {
+  if (!settings || !settings.setup_complete || !$("skillsList")) return;
+
+  try {
+    const list = await invoke("list_skills");
+    if (!list || list.length === 0) {
+      $("skillsList").innerHTML = '<span class="muted">' + t("skills.empty") + '</span>';
+      return;
+    }
+    $("skillsList").innerHTML = list
+      .map(function (s) {
+        return '<div class="agent-pill ' + (s.enabled ? "connected" : "") + '">'
+          + "<span>" + s.name + " (" + s.step_count + " steps)</span>"
+          + '<button class="compact-btn secondary-button run-skill-btn" data-id="' + s.id + '">' + t("skills.run_btn") + '</button>'
+          + "</div>";
+      })
+      .join("");
+
+    $("skillsList").querySelectorAll(".run-skill-btn").forEach(function (btn) {
+      btn.addEventListener("click", function (e) {
+        e.stopPropagation();
+        runSkill(btn.getAttribute("data-id"));
+      });
+    });
+  } catch {
+    $("skillsList").innerHTML = '<span class="muted">' + t("skills.empty") + '</span>';
+  }
+}
+
+async function runSkill(skillId) {
+  try {
+    const res = await invoke("execute_skill", { id: skillId, inputs: null, sessionId: null });
+    if (res.status === "success") {
+      $("attentionBanner").classList.remove("hidden");
+      $("attentionText").textContent = t("skills.execute_success", { name: skillId, completed: res.completed_steps, total: res.total_steps });
+    } else if (res.status === "cancelled") {
+      $("attentionBanner").classList.remove("hidden");
+      $("attentionText").textContent = t("skills.execute_cancelled", { name: skillId });
+    } else if (res.status === "confirm") {
+      // Step triggered policy confirmation - already issued
+    } else {
+      $("attentionBanner").classList.remove("hidden");
+      $("attentionText").textContent = t("skills.execute_failed", { name: skillId, step: (res.halted_at_step || 0) + 1, error: res.error || "error" });
+    }
+  } catch (err) {
+    $("attentionBanner").classList.remove("hidden");
+    $("attentionText").textContent = t("skills.execute_failed", { name: skillId, step: 1, error: String(err) });
+  }
+}
+
+async function toggleSkillRecording() {
+  const btn = $("toggleSkillRecording");
+  const notice = $("skillRecordingNotice");
+  if (!btn) return;
+
+  if (!isSkillRecording) {
+    try {
+      await invoke("start_skill_recording");
+      isSkillRecording = true;
+      btn.textContent = t("skills.record_stop");
+      if (notice) {
+        notice.classList.remove("hidden");
+        notice.textContent = t("skills.recording_active");
+      }
+    } catch (err) {
+      console.error("Failed to start recording:", err);
+    }
+  } else {
+    try {
+      const count = await invoke("stop_skill_recording");
+      isSkillRecording = false;
+      btn.textContent = t("skills.record_start");
+      if (notice) {
+        notice.textContent = t("skills.recording_stopped") + " (" + count + " actions)";
+      }
+      if (count > 0) {
+        const draftId = "draft_skill_" + Date.now();
+        const draft = await invoke("compile_skill_draft", { id: draftId, name: "Recorded Workflow" });
+        await invoke("save_skill", { skill: draft });
+        await refreshSkills();
+      }
+    } catch (err) {
+      console.error("Failed to stop recording:", err);
+    }
   }
 }
 
@@ -814,6 +904,8 @@ $("finishSetup").addEventListener("click", finishSetup);
 $("listenButton").addEventListener("click", toggleListening);
 $("retryEngine").addEventListener("click", retryEngine);
 $("refreshHarnesses").addEventListener("click", refreshHarnesses);
+if ($("refreshSkills")) $("refreshSkills").addEventListener("click", refreshSkills);
+if ($("toggleSkillRecording")) $("toggleSkillRecording").addEventListener("click", toggleSkillRecording);
 $("hideWindow").addEventListener("click", function () {
   getCurrentWindow().hide();
 });

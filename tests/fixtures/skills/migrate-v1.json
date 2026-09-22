@@ -1,0 +1,30 @@
+{
+  "id": "migrate-v1",
+  "version": 1,
+  "name": "Legacy V1 Workflow",
+  "description": "Legacy format with actions list and missing cancel block that must migrate to v2.",
+  "inputs": {
+    "target_app": {
+      "type": "string",
+      "default": "terminal"
+    }
+  },
+  "actions": [
+    {
+      "id": "legacy-action-1",
+      "tool": "app.open",
+      "args": {
+        "app": "{{target_app}}"
+      },
+      "risk": "sensitive",
+      "capability": "desktop.launch",
+      "verification": {
+        "kind": "none"
+      }
+    }
+  ],
+  "verification": {
+    "kind": "none"
+  },
+  "timeout_ms": 8000
+}

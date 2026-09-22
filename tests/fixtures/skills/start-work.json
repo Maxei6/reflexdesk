@@ -1,0 +1,81 @@
+{
+  "id": "start-work",
+  "version": 2,
+  "name": "Start work",
+  "description": "Opens the editor, launches the development browser dashboard, and focuses the workspace.",
+  "inputs": {
+    "app_name": {
+      "type": "string",
+      "default": "vscode",
+      "required": false,
+      "description": "Editor application alias to open"
+    },
+    "dashboard_url": {
+      "type": "string",
+      "default": "http://localhost:1420",
+      "required": false,
+      "description": "Local dashboard URL to open in browser"
+    }
+  },
+  "steps": [
+    {
+      "id": "open-editor",
+      "tool": "app.open",
+      "args": {
+        "app": "{{app_name}}"
+      },
+      "source": "user",
+      "risk": "sensitive",
+      "capability": "desktop.launch",
+      "verification": {
+        "kind": "none",
+        "selector": null,
+        "expect": null,
+        "timeout_ms": 1000
+      },
+      "preconditions": [
+        {
+          "check": "desktop_health",
+          "target": "accessibility",
+          "expected": true
+        }
+      ]
+    },
+    {
+      "id": "open-dashboard",
+      "tool": "browser.open",
+      "args": {
+        "url": "{{dashboard_url}}"
+      },
+      "source": "user",
+      "risk": "sensitive",
+      "capability": "browser.open",
+      "verification": {
+        "kind": "none",
+        "selector": null,
+        "expect": null,
+        "timeout_ms": 1000
+      }
+    }
+  ],
+  "verification": {
+    "kind": "none",
+    "selector": null,
+    "expect": null,
+    "timeout_ms": 2000
+  },
+  "timeout_ms": 15000,
+  "cancel": {
+    "allow_cancel": true,
+    "on_cancel": "abort",
+    "cleanup_steps": []
+  },
+  "trust": {
+    "origin": "builtin",
+    "trusted": true,
+    "signature": null,
+    "permissions": ["desktop.launch", "browser.open"],
+    "imported_at": "2026-09-22T00:00:00Z"
+  },
+  "enabled": true
+}

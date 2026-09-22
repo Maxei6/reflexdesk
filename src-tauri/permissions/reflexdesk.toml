@@ -115,3 +115,21 @@ commands.allow = ["get_provider_status"]
 identifier = "allow-list-secret-metadata"
 description = "List metadata of stored secrets without exposing contents (main window only)."
 commands.allow = ["list_secret_metadata"]
+
+[[permission]]
+identifier = "allow-skills-manage"
+description = "Manage, record, import, export, and execute deterministic skills (main window only)."
+commands.allow = [
+    "execute_skill",
+    "list_skills",
+    "get_skill",
+    "save_skill",
+    "delete_skill",
+    "import_skill",
+    "export_skill",
+    "set_skill_enabled",
+    "start_skill_recording",
+    "stop_skill_recording",
+    "compile_skill_draft",
+    "get_skill_recording_status",
+]

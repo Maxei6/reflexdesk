@@ -10,6 +10,7 @@ const jsonFiles = [
   "config/harnesses.json",
   "models/registry.json",
   "tests/matrix.json",
+  "schemas/skill.schema.json",
 ];
 
 for (const path of jsonFiles) JSON.parse(await readFile(path, "utf8"));
@@ -40,6 +41,7 @@ const required = [
   "src-tauri/src/settings.rs",
   "src-tauri/src/secrets.rs",
   "src-tauri/src/lifecycle.rs",
+  "src-tauri/src/skills.rs",
   "scripts/prepare-stt-runtime.mjs",
   "docs/STT.md",
   "assets/reflexdesk-hero.png",

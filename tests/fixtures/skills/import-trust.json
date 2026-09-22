@@ -1,0 +1,43 @@
+{
+  "id": "import-trust",
+  "version": 2,
+  "name": "Community Imported Skill",
+  "description": "Skill imported from external source requiring explicit trust grant before running.",
+  "inputs": {},
+  "steps": [
+    {
+      "id": "step-1",
+      "tool": "browser.open",
+      "args": {
+        "url": "https://example.com/docs"
+      },
+      "source": "user",
+      "risk": "sensitive",
+      "capability": "browser.open",
+      "verification": {
+        "kind": "none",
+        "selector": null,
+        "expect": null,
+        "timeout_ms": 1000
+      }
+    }
+  ],
+  "verification": {
+    "kind": "none",
+    "selector": null,
+    "expect": null,
+    "timeout_ms": 2000
+  },
+  "timeout_ms": 10000,
+  "cancel": {
+    "allow_cancel": true
+  },
+  "trust": {
+    "origin": "https://skills.reflexdesk.community/pack/web-docs",
+    "trusted": false,
+    "signature": "ed25519:abcdef1234567890",
+    "permissions": ["browser.open"],
+    "imported_at": "2026-09-22T08:30:00Z"
+  },
+  "enabled": false
+}

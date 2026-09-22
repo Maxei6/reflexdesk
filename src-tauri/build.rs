@@ -30,6 +30,18 @@ fn main() {
             "disconnect_provider",
             "get_provider_status",
             "list_secret_metadata",
+            "execute_skill",
+            "list_skills",
+            "get_skill",
+            "save_skill",
+            "delete_skill",
+            "import_skill",
+            "export_skill",
+            "set_skill_enabled",
+            "start_skill_recording",
+            "stop_skill_recording",
+            "compile_skill_draft",
+            "get_skill_recording_status",
         ])),
     )
     .unwrap();
