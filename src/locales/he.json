@@ -1,0 +1,30 @@
+{
+  "meta": {
+    "locale": "he",
+    "name": "עברית",
+    "dir": "rtl"
+  },
+  "brand": {
+    "name": "ReflexDesk",
+    "kicker": "פרטי · מקומי · מהיר",
+    "tagline": "המחשב שלך, עם רפלקסים.",
+    "give_reflexes": "תן למחשב שלך רפלקסים."
+  },
+  "policy": {
+    "modal": {
+      "kicker": "שער מדיניות · נדרש אישור",
+      "title": "אשר ביצוע פעולה",
+      "tool": "כלי",
+      "risk": "סיכון",
+      "arguments": "ארגומנטים",
+      "deny": "דחה",
+      "approve": "אשר"
+    }
+  },
+  "settings": {
+    "reset_confirm": "להפעיל שוב את ההגדרה הראשונית? מטמון המודלים המקומי יישמר."
+  },
+  "agents": {
+    "confirm_start": "להפעיל את {agent}?"
+  }
+}

@@ -3,7 +3,14 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ParticleOrb } from "./lib/particles.js";
 import { routeFast } from "./lib/router.js";
-
+import {
+  t,
+  localizeError,
+  setLocale,
+  getLocale,
+  translateDom,
+  SUPPORTED_LOCALES,
+} from "./lib/i18n.js";
 const $ = (id) => document.getElementById(id);
 const LOCAL_KEY = "reflexdesk.settings.v1";
 
@@ -47,6 +54,18 @@ function fillLanguages(select) {
     .join("");
 }
 
+function fillUiLocales(select) {
+  if (!select) return;
+  const options = [{ code: "system", name: "System Default" }, ...SUPPORTED_LOCALES];
+  select.innerHTML = options
+    .map(function (entry) {
+      return '<option value="' + entry.code + '">' + entry.name + '</option>';
+    })
+    .join("");
+}
+
+fillUiLocales($("uiLocale"));
+
 fillLanguages($("setupLanguage"));
 fillLanguages($("language"));
 
@@ -61,13 +80,13 @@ function syncLocalVoiceSettings() {
   const next = Object.assign({}, previous, {
     sttProvider: settings.stt_provider,
     language: settings.language,
+    uiLocale: settings.ui_locale || "system",
     overlayEnabled: settings.overlay_enabled,
     plannerMode: settings.allow_online_ai ? "hybrid" : "local",
     layaEndpoint: settings.laya_endpoint,
     plannerEndpoint: settings.planner_endpoint,
     plannerModel: settings.planner_model,
   });
-  localStorage.setItem(LOCAL_KEY, JSON.stringify(next));
 }
 
 async function persistSettings() {
@@ -80,7 +99,7 @@ async function persistSettings() {
 
 function renderSettings() {
   if (!settings) return;
-
+  if ($("uiLocale")) $("uiLocale").value = settings.ui_locale || "system";
   $("language").value = settings.language;
   $("startAtLogin").checked = Boolean(settings.start_at_login);
   $("overlayEnabled").checked = Boolean(settings.overlay_enabled);
@@ -95,8 +114,8 @@ function renderSettings() {
     .replaceAll("+", " + ");
 
   $("benchmarkInfo").textContent = settings.voice_benchmark_ms
-    ? settings.voice_benchmark_ms + " ms last local STT"
-    : "Not measured";
+    ? t("advanced.last_stt_benchmark", { ms: settings.voice_benchmark_ms })
+    : t("advanced.diag_not_measured");
   renderProviderStatus();
 }
 
@@ -110,18 +129,18 @@ function renderProviderStatus() {
   if (!badge) return;
 
   if (hasSecret) {
-    badge.textContent = "● CONNECTED";
+    badge.textContent = t("provider.status_connected");
     badge.style.color = "#7de29f";
     badge.style.borderColor = "#21412c";
     badge.style.background = "#0d1811";
     if (testBtn) testBtn.disabled = false;
     if (disconnectBtn) disconnectBtn.disabled = false;
     if (msg && !msg.textContent) {
-      msg.textContent = "Connected (credential ID: " + settings.planner_secret_ref.id + ")";
+      msg.textContent = t("provider.connected_id", { id: settings.planner_secret_ref.id });
       msg.className = "provider-status-msg";
     }
   } else {
-    badge.textContent = "DISCONNECTED";
+    badge.textContent = t("provider.status_disconnected");
     badge.style.color = "#888";
     badge.style.borderColor = "#333";
     badge.style.background = "#141414";
@@ -140,10 +159,10 @@ function statusPresentation(state) {
   if (phase === "ready") {
     return {
       cls: "ready",
-      pill: "Ready",
-      headline: "Ready when you are.",
-      subline: "Press the shortcut anywhere, or start listening here.",
-      button: "Talk to ReflexDesk",
+      pill: t("status_pill.ready"),
+      headline: t("dashboard.ready_headline"),
+      subline: t("dashboard.ready_subline"),
+      button: t("dashboard.ready_button"),
       orb: "ready",
     };
   }
@@ -151,10 +170,10 @@ function statusPresentation(state) {
   if ((state && state.listening) || phase === "listening") {
     return {
       cls: "listening",
-      pill: "Listening",
-      headline: "I'm listening.",
-      subline: "Speak naturally. Press the shortcut again to stop.",
-      button: "Stop listening",
+      pill: t("status_pill.listening"),
+      headline: t("dashboard.listening_headline"),
+      subline: t("dashboard.listening_subline"),
+      button: t("dashboard.listening_button"),
       orb: "listening",
     };
   }
@@ -162,10 +181,10 @@ function statusPresentation(state) {
   if (["transcribing", "routing", "executing", "confirmation_required"].includes(phase)) {
     return {
       cls: "working",
-      pill: phase === "executing" ? "Working" : "Understanding",
-      headline: phase === "executing" ? "Doing it." : "Understanding you.",
-      subline: "Everything stays local unless online fallback is enabled.",
-      button: state && state.listening ? "Stop listening" : "Working…",
+      pill: phase === "executing" ? t("status_pill.working") : t("status_pill.understanding"),
+      headline: phase === "executing" ? t("dashboard.working_headline") : t("dashboard.understanding_headline"),
+      subline: t("dashboard.working_subline"),
+      button: state && state.listening ? t("dashboard.listening_button") : t("dashboard.working_button"),
       orb: phase === "executing" ? "executing" : "thinking",
     };
   }
@@ -173,10 +192,10 @@ function statusPresentation(state) {
   if (phase === "error") {
     return {
       cls: "error",
-      pill: "Needs attention",
-      headline: "ReflexDesk needs a quick fix.",
-      subline: state && state.last_error ? state.last_error : "The local engine did not start correctly.",
-      button: "Unavailable",
+      pill: t("status_pill.needs_attention"),
+      headline: t("dashboard.error_headline"),
+      subline: state && state.last_error ? localizeError(state.last_error) : t("dashboard.error_subline_default"),
+      button: t("dashboard.error_button"),
       orb: "error",
     };
   }
@@ -184,20 +203,20 @@ function statusPresentation(state) {
   if (phase === "degraded") {
     return {
       cls: "error",
-      pill: "Recovering",
-      headline: "Restarting the local engine.",
-      subline: state && state.last_error ? state.last_error : "ReflexDesk is recovering automatically.",
-      button: "Recovering…",
+      pill: t("status_pill.recovering"),
+      headline: t("dashboard.recovering_headline"),
+      subline: state && state.last_error ? localizeError(state.last_error) : t("dashboard.recovering_subline_default"),
+      button: t("dashboard.recovering_button"),
       orb: "error",
     };
   }
 
   return {
     cls: "working",
-    pill: phase === "setup_required" ? "Setup required" : "Preparing",
-    headline: phase === "setup_required" ? "Finish setup first." : "ReflexDesk is preparing.",
-    subline: "The local engine must be ready before voice control can start.",
-    button: "Preparing…",
+    pill: phase === "setup_required" ? t("status_pill.setup_required") : t("status_pill.preparing"),
+    headline: phase === "setup_required" ? t("dashboard.setup_required_headline") : t("dashboard.preparing_headline"),
+    subline: phase === "setup_required" ? t("dashboard.setup_required_subline") : t("dashboard.preparing_subline"),
+    button: t("dashboard.preparing_button"),
     orb: "thinking",
   };
 }
@@ -211,12 +230,12 @@ function renderRuntime(next) {
       unlockVoiceTest();
     } else if (next && next.phase === "error") {
       onboardingTesting = false;
-      setSetupBusy(false, next.last_error || "The local engine could not start.");
-      $("voiceTestStatus").textContent = "Fix the issue above, then retry setup.";
+      setSetupBusy(false, next.last_error ? localizeError(next.last_error) : t("onboarding.fix_issue_retry"));
+      $("voiceTestStatus").textContent = t("onboarding.fix_issue_retry");
       $("testVoice").disabled = true;
       setupOrb.setState("error");
     } else if (next && next.phase === "degraded") {
-      setSetupBusy(true, next.last_error || "Recovering the local engine…");
+      setSetupBusy(true, next.last_error ? localizeError(next.last_error) : t("onboarding.recovering_engine"));
       setupOrb.setState("warning");
     }
     return;
@@ -240,7 +259,7 @@ function renderRuntime(next) {
   const showAttention = next && ["error", "degraded"].includes(next.phase);
   $("attentionBanner").classList.toggle("hidden", !showAttention);
   if (showAttention) {
-    $("attentionText").textContent = next.last_error || "The local engine is not ready.";
+    $("attentionText").textContent = next.last_error ? localizeError(next.last_error) : t("dashboard.attention_engine_not_ready");
   }
 }
 
@@ -252,6 +271,7 @@ function showOnboarding() {
   $("setupLanguage").value = initial;
   $("setupAutostart").checked = Boolean(settings.start_at_login);
   setupOrb.setState("ready");
+  translateDom();
 }
 
 function showDashboard() {
@@ -261,6 +281,7 @@ function showDashboard() {
   renderRuntime(runtime);
   refreshHarnesses();
   refreshDiagnostics();
+  translateDom();
 }
 
 async function requestMicrophonePermission() {
@@ -286,15 +307,14 @@ function unlockVoiceTest() {
   engineReady = true;
   $("voiceTestStep").classList.add("unlocked");
   $("testVoice").disabled = false;
-  $("voiceTestStatus").textContent =
-    "Local engine ready. Say a short phrase to prove microphone → speech → ReflexDesk works.";
-  setSetupBusy(false, "Local speech engine is ready.");
+  $("voiceTestStatus").textContent = t("onboarding.step4_engine_ready");
+  setSetupBusy(false, t("onboarding.engine_ready"));
   setupOrb.setState("ready");
 }
 
 async function prepareSetup() {
   try {
-    setSetupBusy(true, "Checking microphone permission…");
+    setSetupBusy(true, t("onboarding.checking_mic"));
     setupOrb.setState("thinking");
 
     await requestMicrophonePermission();
@@ -304,14 +324,14 @@ async function prepareSetup() {
     settings.stt_provider = "nemotron";
     await persistSettings();
 
-    setSetupBusy(true, "Preparing NVIDIA Nemotron locally. First setup may download the model…");
+    setSetupBusy(true, t("onboarding.preparing_nemotron"));
     await invoke("prepare_engine");
 
     const current = await invoke("get_runtime_status");
     renderRuntime(current);
     if (current.ready) unlockVoiceTest();
   } catch (error) {
-    setSetupBusy(false, "Setup stopped: " + String(error));
+    setSetupBusy(false, t("onboarding.setup_stopped", { error: String(error) }));
     setupOrb.setState("error");
   }
 }
@@ -323,13 +343,13 @@ async function startVoiceTest() {
     onboardingTesting = true;
     testStartedAt = performance.now();
     $("testVoice").disabled = true;
-    $("voiceTestStatus").textContent = "Say exactly: “Hello ReflexDesk”.";
+    $("voiceTestStatus").textContent = t("onboarding.step4_prompt");
     setupOrb.setState("listening");
     await invoke("set_listening", { active: true });
   } catch (error) {
     onboardingTesting = false;
     $("testVoice").disabled = false;
-    $("voiceTestStatus").textContent = "Voice test failed to start: " + String(error);
+    $("voiceTestStatus").textContent = t("onboarding.voice_test_failed", { error: String(error) });
     setupOrb.setState("error");
   }
 }
@@ -339,7 +359,7 @@ async function passVoiceTest(payload) {
   const route = routeFast(heard);
 
   if (!(route.kind === "control" && route.action === "reflex.ping")) {
-    $("voiceTestStatus").textContent = "I heard “" + heard.slice(0, 70) + "”. Try again and say: “Hello ReflexDesk”.";
+    $("voiceTestStatus").textContent = t("onboarding.step4_heard_retry", { heard: heard.slice(0, 70) });
     setupOrb.setState("warning");
     return;
   }
@@ -357,10 +377,9 @@ async function passVoiceTest(payload) {
   );
 
   setupOrb.setState("success");
-  $("voiceTestStatus").textContent =
-    "Heard: “" + heard.slice(0, 80) + "”";
+  $("voiceTestStatus").textContent = t("onboarding.step4_heard_success", { heard: heard.slice(0, 80) });
   $("setupDone").classList.remove("hidden");
-  $("benchmarkText").textContent = "Local speech passed in about " + benchmarkMs + " ms.";
+  $("benchmarkText").textContent = t("onboarding.done_benchmark", { ms: benchmarkMs });
   $("finishSetup").focus();
 }
 
@@ -370,7 +389,7 @@ async function finishSetup() {
     syncLocalVoiceSettings();
     showDashboard();
   } catch (error) {
-    $("voiceTestStatus").textContent = "Could not finish setup: " + String(error);
+    $("voiceTestStatus").textContent = t("onboarding.finish_error", { error: String(error) });
     setupOrb.setState("error");
   }
 }
@@ -378,6 +397,14 @@ async function finishSetup() {
 async function saveDashboardSettings() {
   if (!settings) return;
 
+  if ($("uiLocale")) {
+    const prevLocale = settings.ui_locale;
+    settings.ui_locale = $("uiLocale").value;
+    if (settings.ui_locale !== prevLocale) {
+      setLocale(settings.ui_locale);
+      translateDom();
+    }
+  }
   settings.language = $("language").value;
   settings.start_at_login = $("startAtLogin").checked;
   settings.overlay_enabled = $("overlayEnabled").checked;
@@ -391,7 +418,7 @@ async function saveDashboardSettings() {
     await persistSettings();
   } catch (error) {
     $("attentionBanner").classList.remove("hidden");
-    $("attentionText").textContent = "Could not save setting: " + String(error);
+    $("attentionText").textContent = t("settings.save_error", { error: String(error) });
   }
 }
 
@@ -425,7 +452,7 @@ async function refreshHarnesses() {
       })
       .join("");
   } catch {
-    $("harnessList").innerHTML = '<span class="muted">Could not check local agents.</span>';
+    $("harnessList").innerHTML = '<span class="muted">' + t("agents.check_failed") + '</span>';
   }
 }
 
@@ -450,15 +477,16 @@ async function refreshDiagnostics() {
       + " threads · " + profile.acceleration_hint;
 
     $("engineInfo").textContent = speech.ready
-      ? "Nemotron 3.5 ready locally"
+      ? t("advanced.diag_engine_ready")
       : speech.running
-        ? "Starting local engine"
-        : "Local engine stopped";
+        ? t("advanced.diag_engine_starting")
+        : t("advanced.diag_engine_stopped");
 
     if ($("modelCacheInfo")) {
       const mb = (cacheBytes / (1024 * 1024)).toFixed(1);
-      $("modelCacheInfo").textContent = mb + " MB on disk";
+      $("modelCacheInfo").textContent = t("advanced.diag_cache_mb", { mb: mb });
     }
+
 
     if ($("modelBackendInfo") && modelStatus) {
       $("modelBackendInfo").textContent = modelStatus.verified
@@ -473,11 +501,11 @@ async function refreshDiagnostics() {
       } else if (settings.voice_benchmark_ms) {
         $("benchmarkInfo").textContent = settings.voice_benchmark_ms + " ms last local STT";
       } else {
-        $("benchmarkInfo").textContent = "Not measured";
+        $("benchmarkInfo").textContent = t("advanced.diag_not_measured");
       }
     }
   } catch {
-    $("systemInfo").textContent = "Diagnostics unavailable";
+    $("systemInfo").textContent = t("advanced.diag_unavailable");
   }
 }
 const TOOL_RISK_MAP = {
@@ -549,13 +577,13 @@ function showConfirmationModal(req, onDecision) {
 
   const kicker = document.createElement("span");
   kicker.className = "kicker";
-  kicker.textContent = "POLICY GATE · CONFIRMATION REQUIRED";
+  kicker.textContent = t("policy.modal.kicker");
 
   const title = document.createElement("h2");
   title.style.margin = "0";
   title.style.fontSize = "18px";
   title.style.fontWeight = "600";
-  title.textContent = "Approve Action Execution";
+  title.textContent = t("policy.modal.title");
 
   header.appendChild(kicker);
   header.appendChild(title);
@@ -592,10 +620,11 @@ function showConfirmationModal(req, onDecision) {
     details.appendChild(row);
   }
 
-  addRow("Tool", req.tool || "unknown");
-  addRow("Risk", (req.risk || "unknown").toUpperCase());
+  addRow(t("policy.modal.tool"), req.tool || "unknown");
+  const riskKey = "policy.risk." + (req.risk || "unknown").toLowerCase();
+  addRow(t("policy.modal.risk"), t(riskKey, { default: (req.risk || "unknown").toUpperCase() }));
   if (req.args_summary) {
-    addRow("Arguments", req.args_summary);
+    addRow(t("policy.modal.arguments"), req.args_summary);
   }
 
   card.appendChild(details);
@@ -608,12 +637,12 @@ function showConfirmationModal(req, onDecision) {
 
   const denyBtn = document.createElement("button");
   denyBtn.className = "secondary";
-  denyBtn.textContent = "Deny";
+  denyBtn.textContent = t("policy.modal.deny");
   denyBtn.style.minWidth = "88px";
 
   const approveBtn = document.createElement("button");
   approveBtn.className = "primary";
-  approveBtn.textContent = "Approve";
+  approveBtn.textContent = t("policy.modal.approve");
   approveBtn.style.minWidth = "88px";
 
   function cleanup() {
@@ -676,16 +705,16 @@ function handleActionResult(result) {
   if (!result) return;
   if (result.status === "deny" || result.status === "denied") {
     $("attentionBanner").classList.remove("hidden");
-    const reason = result.reason || "Action denied by policy gate.";
+    const reason = result.reason ? localizeError(result.reason) : t("policy.status.denied");
     $("attentionText").textContent = reason;
     dashboardOrb.setState("idle");
   } else if (result.status === "cancelled") {
     $("attentionBanner").classList.remove("hidden");
-    $("attentionText").textContent = "Action cancelled.";
+    $("attentionText").textContent = t("policy.status.cancelled");
     dashboardOrb.setState("idle");
   } else if (result.status === "error") {
     $("attentionBanner").classList.remove("hidden");
-    $("attentionText").textContent = result.reason || "Action failed.";
+    $("attentionText").textContent = result.reason ? localizeError(result.reason) : t("policy.status.failed");
     dashboardOrb.setState("error");
   } else if (result.status === "success") {
     $("attentionBanner").classList.add("hidden");
@@ -766,6 +795,8 @@ async function dispatchText(text) {
 async function bootstrap() {
   settings = await invoke("get_app_settings");
   runtime = await invoke("get_runtime_status");
+  setLocale(settings.ui_locale || "system");
+  translateDom();
   syncLocalVoiceSettings();
 
   if (settings.setup_complete) {
@@ -788,6 +819,7 @@ $("hideWindow").addEventListener("click", function () {
 });
 
 for (const id of [
+  "uiLocale",
   "language",
   "startAtLogin",
   "overlayEnabled",
@@ -797,28 +829,30 @@ for (const id of [
   "plannerEndpoint",
   "plannerModel",
 ]) {
-  $(id).addEventListener("change", saveDashboardSettings);
+  if ($(id)) $(id).addEventListener("change", saveDashboardSettings);
 }
 
 $("resetSetup").addEventListener("click", async function () {
-  if (!window.confirm("Run first-time setup again? Your local model cache will be kept.")) return;
+  if (!window.confirm(t("settings.reset_confirm"))) return;
   settings = await invoke("reset_setup");
   showOnboarding();
 });
+
+
 
 if ($("repairModel")) {
   $("repairModel").addEventListener("click", async function () {
     try {
       $("repairModel").disabled = true;
-      $("repairModel").textContent = "Repairing…";
+      $("repairModel").textContent = t("advanced.btn_repairing");
       await invoke("repair_model");
       await refreshDiagnostics();
     } catch (err) {
       $("attentionBanner").classList.remove("hidden");
-      $("attentionText").textContent = "Model repair failed: " + String(err).slice(0, 200);
+      $("attentionText").textContent = t("advanced.model_repair_failed", { error: String(err).slice(0, 200) });
     } finally {
       $("repairModel").disabled = false;
-      $("repairModel").textContent = "Repair model";
+      $("repairModel").textContent = t("advanced.btn_repair_model");
     }
   });
 }
@@ -826,15 +860,15 @@ if ($("runBenchmark")) {
   $("runBenchmark").addEventListener("click", async function () {
     try {
       $("runBenchmark").disabled = true;
-      $("runBenchmark").textContent = "Benchmarking…";
+      $("runBenchmark").textContent = t("advanced.btn_benchmarking");
       await invoke("run_hardware_benchmark", { timeoutSecs: 30 });
       await refreshDiagnostics();
     } catch (err) {
       $("attentionBanner").classList.remove("hidden");
-      $("attentionText").textContent = "Benchmark failed: " + String(err).slice(0, 200);
+      $("attentionText").textContent = t("advanced.benchmark_failed", { error: String(err).slice(0, 200) });
     } finally {
       $("runBenchmark").disabled = false;
-      $("runBenchmark").textContent = "Run benchmark";
+      $("runBenchmark").textContent = t("advanced.btn_run_benchmark");
     }
   });
 }
@@ -842,7 +876,7 @@ if ($("previewDiagnostics")) {
   $("previewDiagnostics").addEventListener("click", async function () {
     try {
       $("previewDiagnostics").disabled = true;
-      $("previewDiagnostics").textContent = "Loading…";
+      $("previewDiagnostics").textContent = t("advanced.diag_loading");
       const bundle = await invoke("get_diagnostics_preview");
       if ($("diagnosticsPreviewText") && $("diagnosticsPreviewContainer")) {
         $("diagnosticsPreviewText").textContent = JSON.stringify(bundle, null, 2);
@@ -850,11 +884,11 @@ if ($("previewDiagnostics")) {
       }
     } catch (err) {
       if ($("diagnosticsStatus")) {
-        $("diagnosticsStatus").textContent = "Preview error: " + String(err).slice(0, 100);
+        $("diagnosticsStatus").textContent = t("advanced.preview_error", { error: String(err).slice(0, 100) });
       }
     } finally {
       $("previewDiagnostics").disabled = false;
-      $("previewDiagnostics").textContent = "Preview";
+      $("previewDiagnostics").textContent = t("advanced.diag_preview_btn");
     }
   });
 }
@@ -869,18 +903,18 @@ if ($("exportDiagnostics")) {
   $("exportDiagnostics").addEventListener("click", async function () {
     try {
       $("exportDiagnostics").disabled = true;
-      $("exportDiagnostics").textContent = "Exporting…";
+      $("exportDiagnostics").textContent = t("advanced.btn_exporting");
       const bundle = await invoke("export_diagnostics", { path: null });
       if ($("diagnosticsStatus")) {
-        $("diagnosticsStatus").textContent = "Diagnostics exported successfully (" + bundle.recent_logs.length + " logs).";
+        $("diagnosticsStatus").textContent = t("advanced.export_success_plural", { count: bundle.recent_logs.length });
       }
     } catch (err) {
       if ($("diagnosticsStatus")) {
-        $("diagnosticsStatus").textContent = "Export error: " + String(err).slice(0, 100);
+        $("diagnosticsStatus").textContent = t("advanced.export_error", { error: String(err).slice(0, 100) });
       }
     } finally {
       $("exportDiagnostics").disabled = false;
-      $("exportDiagnostics").textContent = "Export";
+      $("exportDiagnostics").textContent = t("advanced.diag_export_btn");
     }
   });
 }
@@ -948,7 +982,7 @@ if ($("connectProvider")) {
     const msg = $("providerStatusMessage");
     if (!key) {
       if (msg) {
-        msg.textContent = "Please enter an API key.";
+        msg.textContent = t("provider.enter_key_prompt");
         msg.className = "provider-status-msg error";
       }
       return;
@@ -969,14 +1003,14 @@ if ($("connectProvider")) {
       renderSettings();
 
       if (msg) {
-        msg.textContent = status.message || "Connected successfully.";
+        msg.textContent = status.message || t("provider.connected_success");
         msg.className = status.last_status === "auth-invalid"
           ? "provider-status-msg error"
           : "provider-status-msg success";
       }
     } catch (err) {
       if (msg) {
-        msg.textContent = "Connection failed: " + String(err).slice(0, 150);
+        msg.textContent = t("provider.connection_failed", { error: String(err).slice(0, 150) });
         msg.className = "provider-status-msg error";
       }
     } finally {
@@ -994,18 +1028,18 @@ if ($("testProvider")) {
       $("testProvider").textContent = "Testing…";
       const status = await invoke("test_provider", { provider: "planner" });
       if (msg) {
-        msg.textContent = status.message;
+        msg.textContent = status.message || t("provider.connected_success");
         msg.className = status.last_status === "auth-invalid"
           ? "provider-status-msg error"
           : "provider-status-msg success";
       }
       if (status.last_status === "auth-invalid") {
         $("attentionBanner").classList.remove("hidden");
-        $("attentionText").textContent = "Provider rejected API key (401/403). Please rotate your key.";
+        $("attentionText").textContent = t("provider.auth_invalid");
       }
     } catch (err) {
       if (msg) {
-        msg.textContent = "Test error: " + String(err).slice(0, 150);
+        msg.textContent = t("provider.test_error", { error: String(err).slice(0, 150) });
         msg.className = "provider-status-msg error";
       }
     } finally {
@@ -1024,12 +1058,12 @@ if ($("disconnectProvider")) {
       settings = await invoke("get_app_settings");
       renderSettings();
       if (msg) {
-        msg.textContent = "Provider disconnected.";
+        msg.textContent = t("provider.disconnected_success");
         msg.className = "provider-status-msg";
       }
     } catch (err) {
       if (msg) {
-        msg.textContent = "Disconnect error: " + String(err).slice(0, 150);
+        msg.textContent = t("provider.disconnect_error", { error: String(err).slice(0, 150) });
         msg.className = "provider-status-msg error";
       }
     } finally {

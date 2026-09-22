@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::{fs, path::PathBuf, sync::Mutex};
 use tauri::{AppHandle, Manager};
 
-pub const SETTINGS_SCHEMA_VERSION: u32 = 1;
+pub const SETTINGS_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -10,6 +10,7 @@ pub struct AppSettings {
     pub schema_version: u32,
     pub setup_complete: bool,
     pub language: String,
+    pub ui_locale: String,
     pub shortcut: String,
     pub start_at_login: bool,
     pub overlay_enabled: bool,
@@ -30,6 +31,7 @@ impl Default for AppSettings {
             setup_complete: false,
             language: "auto".into(),
             shortcut: "CommandOrControl+Shift+Space".into(),
+            ui_locale: "system".into(),
             start_at_login: true,
             overlay_enabled: true,
             sounds_enabled: false,
@@ -103,8 +105,19 @@ pub fn load_guarded(app: &AppHandle) -> Result<AppSettings, String> {
         return Err(safe_msg);
     }
 
-    serde_json::from_value::<AppSettings>(raw_json)
-        .map_err(|e| format!("failed to deserialize AppSettings: {e}"))
+    let mut settings = serde_json::from_value::<AppSettings>(raw_json)
+        .map_err(|e| format!("failed to deserialize AppSettings: {e}"))?;
+
+    // Schema v2 migration: ensure ui_locale is present and bump version
+    if settings.schema_version < 2 {
+        settings.schema_version = SETTINGS_SCHEMA_VERSION;
+        if settings.ui_locale.is_empty() {
+            settings.ui_locale = "system".into();
+        }
+        let _ = save(app, &settings);
+    }
+
+    Ok(settings)
 }
 
 pub fn save(app: &AppHandle, settings: &AppSettings) -> Result<(), String> {
@@ -120,4 +133,36 @@ pub fn save(app: &AppHandle, settings: &AppSettings) -> Result<(), String> {
 
     fs::rename(&temp, &path).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_settings_v2_default_and_migration() {
+        let default_settings = AppSettings::default();
+        assert_eq!(default_settings.schema_version, 2);
+        assert_eq!(default_settings.ui_locale, "system");
+
+        // Deserializing a v1 JSON missing ui_locale and with schema_version 1
+        let v1_json = serde_json::json!({
+            "schema_version": 1,
+            "setup_complete": true,
+            "language": "en"
+        });
+
+        let mut migrated: AppSettings = serde_json::from_value(v1_json).expect("deserialize v1");
+        assert_eq!(migrated.schema_version, 1);
+        assert_eq!(migrated.ui_locale, "system"); // via serde(default)
+
+        if migrated.schema_version < 2 {
+            migrated.schema_version = SETTINGS_SCHEMA_VERSION;
+            if migrated.ui_locale.is_empty() {
+                migrated.ui_locale = "system".into();
+            }
+        }
+        assert_eq!(migrated.schema_version, 2);
+        assert_eq!(migrated.ui_locale, "system");
+    }
 }

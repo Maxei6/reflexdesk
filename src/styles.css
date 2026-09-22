@@ -450,3 +450,39 @@ kbd {
   .setting-line { align-items: flex-start; }
   .dashboard-footer { flex-direction: column; }
 }
+
+/* RTL Layout Support (Arabic/Hebrew) */
+[dir="rtl"] {
+  direction: rtl;
+  text-align: right;
+}
+
+[dir="rtl"] .brand-row {
+  flex-direction: row;
+}
+
+[dir="rtl"] .setting-line {
+  flex-direction: row-reverse;
+}
+
+[dir="rtl"] .dashboard-header {
+  flex-direction: row-reverse;
+}
+
+[dir="rtl"] .listen-card {
+  flex-direction: row-reverse;
+}
+
+[dir="rtl"] .section-title {
+  flex-direction: row-reverse;
+}
+
+[dir="rtl"] .diagnostics-btn-group,
+[dir="rtl"] .advanced-actions,
+[dir="rtl"] .provider-actions {
+  flex-direction: row-reverse;
+}
+
+[dir="rtl"] .dashboard-footer {
+  flex-direction: row-reverse;
+}
