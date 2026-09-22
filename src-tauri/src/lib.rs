@@ -48,6 +48,22 @@ fn update_runtime(
     Ok(snapshot)
 }
 
+fn register_shortcut(app: &AppHandle, preferred: &str) -> Result<String, String> {
+    let candidates = [
+        preferred.to_string(),
+        "CommandOrControl+Alt+Space".to_string(),
+        "CommandOrControl+Shift+Period".to_string(),
+    ];
+
+    for shortcut in candidates {
+        if app.global_shortcut().register(shortcut.as_str()).is_ok() {
+            return Ok(shortcut);
+        }
+    }
+
+    Err("No global ReflexDesk shortcut could be registered. Change conflicting app shortcuts and restart ReflexDesk.".into())
+}
+
 fn apply_autostart(app: &AppHandle, enabled: bool) -> Result<bool, String> {
     let manager = app.autolaunch();
     if enabled {
@@ -593,8 +609,23 @@ pub fn run() {
 
             tray::setup(app)?;
 
-            app.global_shortcut()
-                .register("CommandOrControl+Shift+Space")?;
+            let registered_shortcut = register_shortcut(app.handle(), &loaded_settings.shortcut);
+            let mut loaded_settings = loaded_settings;
+
+            match registered_shortcut {
+                Ok(shortcut) => {
+                    if loaded_settings.shortcut != shortcut {
+                        loaded_settings.shortcut = shortcut;
+                        let _ = settings::save(app.handle(), &loaded_settings);
+                        let state = app.state::<SettingsState>();
+                        let _ = state.replace(loaded_settings.clone());
+                    }
+                }
+                Err(error) => {
+                    let _ = update_runtime(app.handle(), Phase::Error, Some(error));
+                    show_main(app.handle());
+                }
+            }
 
             if let Some(main) = app.get_webview_window("main") {
                 let _ = main.hide();
