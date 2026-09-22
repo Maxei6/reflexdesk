@@ -25,6 +25,11 @@ fn main() {
             "set_backend_override",
             "get_diagnostics_preview",
             "export_diagnostics",
+            "connect_provider",
+            "test_provider",
+            "disconnect_provider",
+            "get_provider_status",
+            "list_secret_metadata",
         ])),
     )
     .unwrap();

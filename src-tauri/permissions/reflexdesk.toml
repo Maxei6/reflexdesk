@@ -90,3 +90,28 @@ commands.allow = ["get_diagnostics_preview"]
 identifier = "allow-diagnostics-export"
 description = "Export sanitized diagnostics bundle to disk (main window only)."
 commands.allow = ["export_diagnostics"]
+
+[[permission]]
+identifier = "allow-connect-provider"
+description = "Store and test provider credentials in SecretStore (main window only)."
+commands.allow = ["connect_provider"]
+
+[[permission]]
+identifier = "allow-test-provider"
+description = "Test stored provider credentials against endpoint (main window only)."
+commands.allow = ["test_provider"]
+
+[[permission]]
+identifier = "allow-disconnect-provider"
+description = "Delete provider credentials from SecretStore (main window only)."
+commands.allow = ["disconnect_provider"]
+
+[[permission]]
+identifier = "allow-get-provider-status"
+description = "Query provider connection status (main window only)."
+commands.allow = ["get_provider_status"]
+
+[[permission]]
+identifier = "allow-list-secret-metadata"
+description = "List metadata of stored secrets without exposing contents (main window only)."
+commands.allow = ["list_secret_metadata"]

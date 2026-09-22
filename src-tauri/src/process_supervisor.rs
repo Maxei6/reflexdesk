@@ -220,7 +220,15 @@ impl ProcessSupervisor {
     }
 
     /// Spawns a new process according to `ProcessSpec`, enforcing ownership and platform rules.
-    pub fn spawn(&self, spec: ProcessSpec) -> Result<ProcessId, String> {
+    pub fn spawn(&self, mut spec: ProcessSpec) -> Result<ProcessId, String> {
+        // Enforce secret scrubbing for owned sessions by construction (Plan 08)
+        if spec.ownership == OwnershipClass::OwnedSession {
+            for &var in crate::secrets::HARNESS_SCRUBBED_ENV_VARS {
+                if !spec.env_remove.iter().any(|v| v == var) {
+                    spec.env_remove.push(var.to_string());
+                }
+            }
+        }
         let id = next_process_id();
         let now = Instant::now();
         let now_ms = SystemTime::now()

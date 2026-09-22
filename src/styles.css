@@ -377,11 +377,68 @@ kbd {
   font-size: 11px;
 }
 
+.provider-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  padding: 12px 22px 16px;
+}
+.provider-status-msg {
+  padding: 0 22px 16px;
+  margin: 0;
+  font-size: 11px;
+  color: #888;
+}
+.provider-status-msg.error {
+  color: #ff6a78;
+}
+.provider-status-msg.success {
+  color: #6ef2a1;
+}
+
+.compact-btn {
+  padding: 4px 9px;
+  font-size: 11px;
+}
+.diagnostics-btn-group {
+  display: flex;
+  gap: 6px;
+}
+.diagnostics-preview-box {
+  margin-top: 12px;
+  padding: 10px;
+  background: #0f0f0f;
+  border: 1px solid #222;
+  border-radius: 8px;
+}
+.diagnostics-preview-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+  font-size: 11px;
+  color: #888;
+}
+#diagnosticsPreviewText {
+  max-height: 180px;
+  overflow-y: auto;
+  font-family: monospace;
+  font-size: 10px;
+  color: #bbb;
+  white-space: pre-wrap;
+  word-break: break-all;
+  margin: 0;
+}
+.diagnostics-status-msg {
+  font-size: 11px;
+  color: #777;
+  margin-top: 6px;
+}
+
 .dashboard-footer {
   display: flex; justify-content: space-between; gap: 16px;
   color: #555; font-size: 10px; padding: 17px 4px 0;
 }
-
 @media (max-width: 700px) {
   #dashboard { width: min(100% - 24px, 860px); }
   .onboarding-wrap { width: min(100% - 24px, 680px); padding-top: 24px; }

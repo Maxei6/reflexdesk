@@ -20,6 +20,7 @@ pub struct AppSettings {
     pub laya_endpoint: String,
     pub planner_endpoint: String,
     pub planner_model: String,
+    pub planner_secret_ref: Option<crate::secrets::SecretRef>,
 }
 
 impl Default for AppSettings {
@@ -38,6 +39,7 @@ impl Default for AppSettings {
             laya_endpoint: "http://127.0.0.1:8787".into(),
             planner_endpoint: "http://127.0.0.1:11434/v1/chat/completions".into(),
             planner_model: "auto".into(),
+            planner_secret_ref: None,
         }
     }
 }
@@ -65,13 +67,44 @@ fn settings_path(app: &AppHandle) -> Result<PathBuf, String> {
 }
 
 pub fn load(app: &AppHandle) -> AppSettings {
-    let Ok(path) = settings_path(app) else {
-        return AppSettings::default();
-    };
-    let Ok(contents) = fs::read_to_string(path) else {
-        return AppSettings::default();
-    };
-    serde_json::from_str::<AppSettings>(&contents).unwrap_or_default()
+    match load_guarded(app) {
+        Ok(s) => s,
+        Err(err) => {
+            let msg = crate::redaction::redact_error(&err);
+            eprintln!("Settings load warning: {msg}");
+            AppSettings::default()
+        }
+    }
+}
+
+pub fn load_guarded(app: &AppHandle) -> Result<AppSettings, String> {
+    let path = settings_path(app)?;
+    if !path.exists() {
+        return Ok(AppSettings::default());
+    }
+    let contents = fs::read_to_string(&path)
+        .map_err(|e| format!("failed to read settings file: {e}"))?;
+
+    let raw_json: serde_json::Value = serde_json::from_str(&contents)
+        .map_err(|e| format!("invalid settings JSON: {e}"))?;
+
+    // Plaintext migration guard: reject and quarantine any settings file with plaintext credentials
+    if let Some(detected_key) = crate::secrets::detect_plaintext_secret_key(&raw_json) {
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let quarantine_path = path.with_extension(format!("json.quarantine.{ts}"));
+        let _ = fs::rename(&path, &quarantine_path);
+        let safe_msg = format!(
+            "Settings quarantined: plaintext credential detected (field: {}). Credentials must be stored in secure SecretStore vault.",
+            crate::redaction::redact_text(&detected_key)
+        );
+        return Err(safe_msg);
+    }
+
+    serde_json::from_value::<AppSettings>(raw_json)
+        .map_err(|e| format!("failed to deserialize AppSettings: {e}"))
 }
 
 pub fn save(app: &AppHandle, settings: &AppSettings) -> Result<(), String> {

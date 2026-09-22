@@ -463,6 +463,7 @@ pub struct OpenAiCompatibleLocalPlanner {
     model: String,
     persisted_allow_online: bool,
     cancelled_sessions: Mutex<HashSet<String>>,
+    api_key: Option<Arc<crate::secrets::SecretBytes>>,
 }
 
 impl OpenAiCompatibleLocalPlanner {
@@ -472,7 +473,13 @@ impl OpenAiCompatibleLocalPlanner {
             model: model.into(),
             persisted_allow_online,
             cancelled_sessions: Mutex::new(HashSet::new()),
+            api_key: None,
         }
+    }
+
+    pub fn with_api_key(mut self, key: Option<Arc<crate::secrets::SecretBytes>>) -> Self {
+        self.api_key = key;
+        self
     }
 
     fn check_consent(&self, allow_remote: bool) -> Result<(), String> {
@@ -501,9 +508,13 @@ impl OpenAiCompatibleLocalPlanner {
         };
 
         let mut req = client.get(models_url);
-        if let Ok(key) = std::env::var("REFLEXDESK_PLANNER_API_KEY") {
-            if !key.trim().is_empty() {
-                req = req.bearer_auth(key);
+        if let Some(key) = &self.api_key {
+            if check_endpoint_allowed(&self.endpoint, self.persisted_allow_online).is_ok() {
+                if let Ok(key_str) = key.expose_str() {
+                    if !key_str.trim().is_empty() {
+                        req = req.bearer_auth(key_str);
+                    }
+                }
             }
         }
 
@@ -512,8 +523,12 @@ impl OpenAiCompatibleLocalPlanner {
             .send()
             .map_err(|e| format!("could not discover models: {}", redact_error(&e.to_string())))?;
 
-        if !resp.status().is_success() {
-            return Err(format!("models endpoint HTTP {}", resp.status()));
+        let status = resp.status();
+        if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+            return Err("auth-invalid: provider rejected credentials".into());
+        }
+        if !status.is_success() {
+            return Err(format!("models endpoint HTTP {status}"));
         }
 
         let payload = resp
@@ -550,9 +565,13 @@ impl LocalPlanner for OpenAiCompatibleLocalPlanner {
         };
 
         let mut req = client.get(health_url);
-        if let Ok(key) = std::env::var("REFLEXDESK_PLANNER_API_KEY") {
-            if !key.trim().is_empty() {
-                req = req.bearer_auth(key);
+        if let Some(key) = &self.api_key {
+            if check_endpoint_allowed(&self.endpoint, self.persisted_allow_online).is_ok() {
+                if let Ok(key_str) = key.expose_str() {
+                    if !key_str.trim().is_empty() {
+                        req = req.bearer_auth(key_str);
+                    }
+                }
             }
         }
 
@@ -607,9 +626,13 @@ impl LocalPlanner for OpenAiCompatibleLocalPlanner {
         });
 
         let mut http_req = client.post(&self.endpoint).json(&body);
-        if let Ok(key) = std::env::var("REFLEXDESK_PLANNER_API_KEY") {
-            if !key.trim().is_empty() {
-                http_req = http_req.bearer_auth(key);
+        if let Some(key) = &self.api_key {
+            if check_endpoint_allowed(&self.endpoint, self.persisted_allow_online).is_ok() {
+                if let Ok(key_str) = key.expose_str() {
+                    if !key_str.trim().is_empty() {
+                        http_req = http_req.bearer_auth(key_str);
+                    }
+                }
             }
         }
 
@@ -621,8 +644,12 @@ impl LocalPlanner for OpenAiCompatibleLocalPlanner {
             .send()
             .map_err(|e| format!("planner request failed: {}", redact_error(&e.to_string())))?;
 
-        if !resp.status().is_success() {
-            return Err(format!("planner returned HTTP {}", resp.status()));
+        let status = resp.status();
+        if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+            return Err("auth-invalid: provider rejected credentials".into());
+        }
+        if !status.is_success() {
+            return Err(format!("planner returned HTTP {status}"));
         }
 
         if self.is_cancelled_internal(&req.session_id) {
@@ -670,6 +697,11 @@ pub struct PlannerService {
 impl PlannerService {
     /// Create new planner service configured from app settings and model manager.
     pub fn new(settings: &AppSettings) -> Self {
+        Self::new_with_secret(settings, None)
+    }
+
+    /// Create new planner service with optional secret from SecretStore.
+    pub fn new_with_secret(settings: &AppSettings, secret: Option<Arc<crate::secrets::SecretBytes>>) -> Self {
         let cache_dir = ModelManager::default_cache_dir();
         let native_model_path = cache_dir.join("spark-x2.5.gguf");
 
@@ -679,15 +711,18 @@ impl PlannerService {
             native_model_path,
         ));
 
-        let http = Arc::new(OpenAiCompatibleLocalPlanner::new(
+        let mut http = OpenAiCompatibleLocalPlanner::new(
             &settings.planner_endpoint,
             &settings.planner_model,
             settings.allow_online_ai,
-        ));
+        );
+        if let Some(key) = secret {
+            http = http.with_api_key(Some(key));
+        }
 
         Self {
             native,
-            http,
+            http: Arc::new(http),
             preference: Mutex::new("auto".into()),
         }
     }
