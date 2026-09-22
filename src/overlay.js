@@ -155,6 +155,30 @@ function rmsOf(input) {
   return Math.sqrt(sum / Math.max(1, input.length));
 }
 
+let overlaySessionId = null;
+
+function overlaySession() {
+  if (overlaySessionId) return overlaySessionId;
+  try {
+    overlaySessionId = crypto.randomUUID();
+  } catch {
+    overlaySessionId = "os_" + Math.random().toString(16).slice(2) + Date.now().toString(16);
+  }
+  return overlaySessionId;
+}
+
+async function submitVerifiedTranscript(text, sttLatencyMs) {
+  const clean = String(text || "").trim().slice(0, 1000);
+  if (!clean) return;
+  const nonce = await invoke("transcript_nonce");
+  await invoke("submit_transcript", {
+    text: clean,
+    nonce: nonce,
+    sessionId: overlaySession(),
+    sttLatencyMs: typeof sttLatencyMs === "number" ? sttLatencyMs : null,
+  });
+}
+
 function resetUtterance() {
   speaking = false;
   lastSpeechAt = 0;
@@ -198,10 +222,7 @@ function finalizeNemotronUtterance() {
       if (text) {
         partial.textContent = text;
         root.classList.add("show-caption");
-        await emit("reflexdesk://transcript", {
-          text: text,
-          sttLatencyMs: result.latency_ms,
-        });
+        await submitVerifiedTranscript(text, result.latency_ms);
       }
     } catch (error) {
       if (!active) return;
@@ -343,7 +364,9 @@ async function ensureMoonshine() {
       })
       .onLine(function (line) {
         const text = String(line && line.text ? line.text : "").trim();
-        if (text && active) emit("reflexdesk://transcript", { text: text });
+        if (text && active) {
+          submitVerifiedTranscript(text, null).catch(function (e) { console.warn("transcript submit failed", e); });
+        }
         partial.textContent = "";
       });
 

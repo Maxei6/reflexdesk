@@ -316,11 +316,10 @@ async function passVoiceTest(payload) {
   } catch {}
 
   benchmarkMs = Number(
-    payload && payload.sttLatencyMs
-      ? payload.sttLatencyMs
+    payload && (payload.sttLatencyMs || payload.stt_latency_ms)
+      ? (payload.sttLatencyMs || payload.stt_latency_ms)
       : Math.round(performance.now() - testStartedAt),
   );
-  benchmarkMs = Math.max(1, benchmarkMs);
 
   setupOrb.setState("success");
   $("voiceTestStatus").textContent =
@@ -539,7 +538,11 @@ listen("reflexdesk://attention", function (event) {
     event.payload && event.payload.message ? event.payload.message : "ReflexDesk needs attention.";
 });
 
-listen("reflexdesk://transcript", async function (event) {
+// Rust-owned transcript path: the overlay submits via `submit_transcript`
+// with a Rust-issued nonce; Rust re-emits `transcript-verified`. The old
+// frontend-trusted `reflexdesk://transcript` broadcast is deleted — main
+// never executes from an unverified renderer event.
+listen("reflexdesk://transcript-verified", async function (event) {
   if (onboardingTesting) {
     await passVoiceTest(event.payload);
     return;

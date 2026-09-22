@@ -1,9 +1,12 @@
 mod harness;
 mod lifecycle;
+mod policy;
 mod process_supervisor;
+mod redaction;
 mod settings;
 mod stt;
 mod tools;
+mod transcript;
 mod tray;
 
 use lifecycle::{Phase, RuntimeSnapshot, RuntimeState};
@@ -580,6 +583,26 @@ fn stt_shutdown(state: State<'_, stt::SttState>) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn transcript_nonce(gate: State<'_, transcript::TranscriptGate>) -> String {
+    gate.issue_nonce()
+}
+
+#[tauri::command]
+fn submit_transcript(
+    app: AppHandle,
+    gate: State<'_, transcript::TranscriptGate>,
+    text: String,
+    nonce: String,
+    session_id: String,
+    stt_latency_ms: Option<u64>,
+) -> Result<transcript::VerifiedTranscript, String> {
+    // Bounded input checked before further work (fail closed on oversize).
+    if text.len() > transcript::MAX_TRANSCRIPT_CHARS * 4 {
+        return Err("invalid-args: transcript payload too large".into());
+    }
+    gate.submit(&app, &text, &nonce, &session_id, stt_latency_ms)
+}
+#[tauri::command]
 fn open_settings(app: AppHandle) {
     show_main(&app);
 }
@@ -601,6 +624,7 @@ pub fn run() {
         .manage(RuntimeState::default())
         .manage(stt::SttState::default())
         .manage(ProcessSupervisor::default())
+        .manage(transcript::TranscriptGate::default())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, _shortcut, event| {
@@ -687,6 +711,8 @@ pub fn run() {
             stt_status,
             stt_transcribe,
             stt_shutdown,
+            transcript_nonce,
+            submit_transcript,
             open_settings,
             quit_app
         ])
