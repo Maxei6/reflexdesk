@@ -1,21 +1,29 @@
 {
+  "schema_version": 1,
   "mode": "offline",
+  "general": {
+    "start_at_login": true,
+    "language": "auto",
+    "shortcut": "CommandOrControl+Shift+Space"
+  },
   "voice": {
     "enabled": true,
     "stt_provider": "nemotron",
     "stt_model": "nvidia/nemotron-3.5-asr-streaming-0.6b",
     "stt_runtime": "crispasr",
-    "language": "auto",
-    "shortcut": "CommandOrControl+Shift+Space",
-    "push_to_talk": false,
     "end_silence_ms": 340
   },
   "overlay": {
     "enabled": true,
-    "opacity": 0.82,
-    "particle_style": "white-dots",
+    "size_px": {
+      "width": 190,
+      "height": 145
+    },
+    "placement": "active-monitor-bottom-center",
+    "bottom_gap_px": 56,
     "click_through": true,
-    "reactive_to_voice": true
+    "reactive_to_voice": true,
+    "state_colors": true
   },
   "reflex": {
     "provider": "deterministic",
@@ -30,6 +38,8 @@
   },
   "privacy": {
     "cloud_ai_allowed": false,
-    "telemetry": false
+    "telemetry": false,
+    "stt_bind": "ephemeral-loopback",
+    "stt_session_auth": true
   }
 }

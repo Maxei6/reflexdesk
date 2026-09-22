@@ -15,6 +15,10 @@ export function routeFast(text) {
   const lower = raw.toLowerCase();
   if (!lower) return { kind: "noop", confidence: 1 };
 
+  if (/^(hello|hey)\s+reflex(?:desk)?[.!?]*$/.test(lower)) {
+    return { kind: "control", action: "reflex.ping", args: {}, confidence: 0.99 };
+  }
+
   if (/^(stop|stop listening|go to sleep|sleep)$/.test(lower)) {
     return { kind: "control", action: "voice.stop", args: {}, confidence: 0.99 };
   }

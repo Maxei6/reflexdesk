@@ -1,42 +1,42 @@
-# v0.1 MVP
+# ReflexDesk current implementation
 
-ReflexDesk v0.1 is intentionally narrow and testable.
+## P0 implemented
 
-## Works in this milestone
+- first-run onboarding with language selection
+- microphone permission proof
+- local engine readiness gate
+- end-to-end “Hello ReflexDesk” setup test
+- measured local STT latency persisted in settings
+- hidden/background normal startup
+- native system-tray lifecycle
+- single-instance protection
+- start-at-login support
+- durable versioned settings
+- readiness/error/recovery state machine
+- watchdog restart for the local speech engine
+- owned AI-harness process cleanup on explicit quit
+- compact active-monitor bottom-center overlay
+- semantic colored particle states
+- AudioWorklet microphone capture
+- microphone disconnect handling
+- dynamic loopback STT port + per-session authentication
+- NVIDIA Nemotron 3.5 ASR Streaming 0.6B local STT
+- normal/legacy x86-64 runtime selection
+- Moonshine fallback
+- deterministic fast router
+- safe app/browser tools
+- conservative AI-harness launch bridge
+- Windows/macOS/Linux installer pipelines
 
-- Tauri desktop shell
-- transparent always-on-top particle overlay
-- microphone-energy reactive particle animation
-- global toggle: Command/Ctrl + Shift + Space
-- microphone tracks stop when listening is disabled
-- NVIDIA Nemotron 3.5 ASR Streaming 0.6B as the default local STT
-- pinned CrispASR native runtime packaged per desktop platform
-- utterance-boundary local VAD and persistent localhost STT server
-- Moonshine WASM fallback
-- deterministic fast router for common safe commands
-- native app open / browser open / browser search tools
-- harness detection and conservative launch bridge
-- optional local Laya sidecar adapter
-- configurable local OpenAI-compatible planner endpoint
-- automatic /v1/models discovery when planner model is set to auto
-- Windows/macOS/Linux Tauri bundle targets
+See [P0.md](P0.md) for lifecycle and security decisions.
 
-## Truth boundary
+## Deliberate boundaries
 
-- First Nemotron use can download ~458 MB of model weights.
-- After model/runtime assets are local, STT makes no AI cloud calls.
-- The current integration executes only after a short end-of-speech boundary; it does not act on unstable partial transcription.
-- The bundled Windows/Linux x86-64 runtime defaults to CPU for broad compatibility.
-- Automatic GPU-runtime selection is still roadmap work.
-- Harness prompt injection is deliberately conservative until each structured adapter is verified.
-
-## Next before calling it production ready
-
-- installer hardware benchmark + automatic CPU/GPU runtime selection
-- verified structured ACP adapters for OpenCode/Kilo
-- richer multi-step planner loop with verification/retries
-- automatic Laya runtime packaging / ONNX path
-- native accessibility trees for Windows/macOS/Linux
-- browser extension + CDP bridge
-- signed/notarized releases
-- offline egress test harness
+- first Nemotron use needs network access to fetch model weights
+- Windows/Linux CUDA/Vulkan runtime auto-selection is not yet enabled
+- native accessibility-tree control is not yet implemented
+- browser DOM/CDP control is not yet implemented
+- structured ACP adapters and harness interrupt/resume are not yet implemented
+- stable installers are not signed/notarized until external credentials exist
+- automatic updater activation waits for updater signing keys
+- the current CrispASR realtime WebSocket is not enabled because its listener is not loopback/auth hardened; P0 uses authenticated local HTTP after a short speech-final boundary

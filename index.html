@@ -3,118 +3,225 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#050505" />
+    <meta name="theme-color" content="#060606" />
     <title>ReflexDesk</title>
     <script type="module" src="/src/main.js"></script>
     <link rel="stylesheet" href="/src/styles.css" />
   </head>
   <body>
-    <main class="shell">
-      <header class="topbar">
-        <div>
-          <div class="eyebrow">REFLEXDESK</div>
-          <h1>Your computer, with reflexes.</h1>
-        </div>
-        <button id="masterToggle" class="master" aria-pressed="false">
-          <span class="dot"></span><span id="masterLabel">Off</span>
-        </button>
-      </header>
+    <main class="app-shell">
+      <section id="onboarding" class="view hidden">
+        <div class="onboarding-wrap">
+          <div class="brand-row">
+            <div class="brand-orb"><canvas id="setupOrb"></canvas></div>
+            <span>ReflexDesk</span>
+          </div>
 
-      <section class="hero-panel">
-        <div class="orb-mini" aria-hidden="true"><canvas id="miniOrb"></canvas></div>
-        <div class="hero-copy">
-          <div id="statusLine" class="status-line">Ready. Offline by default.</div>
-          <div id="transcript" class="transcript">Press <kbd>Ctrl/Cmd</kbd> + <kbd>Shift</kbd> + <kbd>Space</kbd> or toggle above.</div>
+          <div class="setup-copy">
+            <span class="kicker">PRIVATE · LOCAL · FAST</span>
+            <h1>Give your computer reflexes.</h1>
+            <p>One quick setup. After this, ReflexDesk lives quietly in your system tray and appears only when you need it.</p>
+          </div>
+
+          <div class="setup-card">
+            <div class="setup-step">
+              <div class="step-number">1</div>
+              <div class="step-content">
+                <label for="setupLanguage">Your main language</label>
+                <select id="setupLanguage" class="control"></select>
+                <p>ReflexDesk can auto-detect speech, but choosing your main language makes the first experience more predictable.</p>
+              </div>
+            </div>
+
+            <div class="setup-step">
+              <div class="step-number">2</div>
+              <div class="step-content">
+                <div class="setting-line compact">
+                  <div>
+                    <strong>Start with your computer</strong>
+                    <span>Recommended. ReflexDesk stays hidden in the tray.</span>
+                  </div>
+                  <label class="switch"><input id="setupAutostart" type="checkbox" checked /><span></span></label>
+                </div>
+              </div>
+            </div>
+
+            <div class="setup-step">
+              <div class="step-number">3</div>
+              <div class="step-content">
+                <strong>Prepare this computer</strong>
+                <p id="setupStatus">We'll check your microphone and start the local speech engine.</p>
+                <div id="setupProgress" class="progress hidden"><span></span></div>
+                <button id="prepareSetup" class="primary wide">Set up ReflexDesk</button>
+              </div>
+            </div>
+
+            <div id="voiceTestStep" class="setup-step muted-step">
+              <div class="step-number">4</div>
+              <div class="step-content">
+                <strong>Make sure it actually works</strong>
+                <p id="voiceTestStatus">Voice test unlocks after the local engine is ready.</p>
+                <button id="testVoice" class="secondary wide" disabled>Test my voice</button>
+              </div>
+            </div>
+          </div>
+
+          <div id="setupDone" class="setup-done hidden">
+            <div class="success-mark">✓</div>
+            <h2>ReflexDesk is ready.</h2>
+            <p id="benchmarkText">Local speech test passed.</p>
+            <button id="finishSetup" class="primary">Open ReflexDesk</button>
+          </div>
         </div>
       </section>
 
-      <section class="grid">
-        <article class="card">
-          <div class="card-title"><span>🎧</span> Voice</div>
-          <label>STT provider
-            <select id="sttProvider">
-              <option value="nemotron">NVIDIA Nemotron 3.5 · local · recommended</option>
-              <option value="moonshine">Moonshine · local fallback</option>
-              <option value="manual">Manual test mode</option>
-            </select>
-          </label>
-          <label>Language
-            <select id="language">
-              <option value="auto">Auto detect</option>
-              <option value="en">English</option>
-              <option value="it">Italian</option>
-              <option value="es">Spanish</option>
-              <option value="fr">French</option>
-              <option value="de">German</option>
-              <option value="pt">Portuguese</option>
-              <option value="nl">Dutch</option>
-              <option value="tr">Turkish</option>
-              <option value="ru">Russian</option>
-              <option value="ar">Arabic</option>
-              <option value="hi">Hindi</option>
-              <option value="ja">Japanese</option>
-              <option value="ko">Korean</option>
-              <option value="vi">Vietnamese</option>
-              <option value="uk">Ukrainian</option>
-              <option value="zh">Mandarin Chinese</option>
-            </select>
-          </label>
-          <p id="sttRuntimeStatus" class="hint">Nemotron uses a pinned native CrispASR runtime. First voice use downloads the ~458 MB local model, then it works offline.</p>
-        </article>
+      <section id="dashboard" class="view hidden">
+        <header class="dashboard-header">
+          <div class="brand-row small">
+            <div class="brand-orb"><canvas id="dashboardOrb"></canvas></div>
+            <div>
+              <strong>ReflexDesk</strong>
+              <span>Your computer, with reflexes.</span>
+            </div>
+          </div>
+          <div id="statusPill" class="status-pill"><span></span><b>Starting</b></div>
+        </header>
 
-        <article class="card">
-          <div class="card-title"><span>⚡</span> Reflex</div>
-          <label>Fast router
-            <select id="reflexProvider">
-              <option value="deterministic">Deterministic fast path</option>
-              <option value="laya">Laya sidecar</option>
-            </select>
-          </label>
-          <label>Laya endpoint
-            <input id="layaEndpoint" value="http://127.0.0.1:8787" />
-          </label>
-          <p class="hint">Simple commands never need the planner. Laya can classify ambiguous known actions locally.</p>
-        </article>
+        <section class="listen-card">
+          <div>
+            <span class="kicker">VOICE CONTROL</span>
+            <h1 id="dashboardHeadline">ReflexDesk is preparing.</h1>
+            <p id="dashboardSubline">Your local speech engine starts in the background.</p>
+          </div>
+          <button id="listenButton" class="talk-button" disabled>
+            <span class="talk-dot"></span>
+            <b>Preparing…</b>
+          </button>
+        </section>
 
-        <article class="card">
-          <div class="card-title"><span>🧠</span> Planner</div>
-          <label>Mode
-            <select id="plannerMode">
-              <option value="local">Local only</option>
-              <option value="hybrid">Hybrid / online fallback</option>
-            </select>
-          </label>
-          <label>OpenAI-compatible endpoint
-            <input id="plannerEndpoint" value="http://127.0.0.1:11434/v1/chat/completions" />
-          </label>
-          <label>Model
-            <input id="plannerModel" value="auto" />
-          </label>
-        </article>
-
-        <article class="card">
-          <div class="card-title"><span>🤖</span> Harnesses</div>
-          <div id="harnessList" class="harness-list"><span class="muted">Detecting…</span></div>
-          <label>Default project folder
-            <input id="workspace" placeholder="/path/to/project" />
-          </label>
-          <button id="refreshHarnesses" class="secondary">Refresh</button>
-          <p class="hint">Detected CLIs can be launched in the selected project folder. Structured ACP adapters come next.</p>
-        </article>
-      </section>
-
-      <section class="test-console">
-        <input id="commandInput" placeholder='Try: “open spotify”, “search for local AI models”, “run codex to check this repo”' />
-        <button id="runCommand">Run</button>
-      </section>
-
-      <footer>
-        <div>
-          <span id="modeBadge" class="badge">📴 Offline</span>
-          <span id="sttBadge" class="badge">🎧 Nemotron 3.5</span>
+        <div id="attentionBanner" class="attention hidden">
+          <div>
+            <strong id="attentionTitle">ReflexDesk needs attention</strong>
+            <span id="attentionText"></span>
+          </div>
+          <button id="retryEngine" class="secondary">Retry</button>
         </div>
-        <span class="muted">Global toggle: Ctrl/Cmd + Shift + Space</span>
-      </footer>
+
+        <section class="settings-card">
+          <div class="section-title">
+            <div>
+              <h2>General</h2>
+              <p>The things you'll actually change.</p>
+            </div>
+          </div>
+
+          <div class="setting-line">
+            <div>
+              <strong>Language</strong>
+              <span>Used for local voice recognition.</span>
+            </div>
+            <select id="language" class="inline-control"></select>
+          </div>
+
+          <div class="setting-line">
+            <div>
+              <strong>Start at login</strong>
+              <span>Keep ReflexDesk ready without opening a window.</span>
+            </div>
+            <label class="switch"><input id="startAtLogin" type="checkbox" /><span></span></label>
+          </div>
+
+          <div class="setting-line">
+            <div>
+              <strong>Reflex animation</strong>
+              <span>Show the small voice-reactive particle indicator.</span>
+            </div>
+            <label class="switch"><input id="overlayEnabled" type="checkbox" /><span></span></label>
+          </div>
+
+          <div class="setting-line">
+            <div>
+              <strong>Shortcut</strong>
+              <span>Press anywhere to start or stop listening.</span>
+            </div>
+            <kbd id="shortcutKey">Ctrl/Cmd + Shift + Space</kbd>
+          </div>
+        </section>
+
+        <section class="settings-card">
+          <div class="section-title">
+            <div>
+              <h2>Privacy</h2>
+              <p>Local by default.</p>
+            </div>
+            <span class="local-badge">● ON DEVICE</span>
+          </div>
+
+          <div class="setting-line">
+            <div>
+              <strong>Allow online AI fallback</strong>
+              <span>Off means ReflexDesk blocks remote planner endpoints.</span>
+            </div>
+            <label class="switch"><input id="allowOnlineAi" type="checkbox" /><span></span></label>
+          </div>
+        </section>
+
+        <section class="settings-card">
+          <div class="section-title">
+            <div>
+              <h2>AI agents</h2>
+              <p>ReflexDesk can hand larger jobs to tools already installed.</p>
+            </div>
+            <button id="refreshHarnesses" class="text-button">Refresh</button>
+          </div>
+          <div id="harnessList" class="agent-grid"><span class="muted">Checking…</span></div>
+        </section>
+
+        <details class="advanced-card">
+          <summary>
+            <span>Advanced</span>
+            <small>Models, endpoints and diagnostics</small>
+          </summary>
+          <div class="advanced-content">
+            <div class="advanced-grid">
+              <label>Speech engine
+                <select id="sttProvider" class="control">
+                  <option value="nemotron">NVIDIA Nemotron 3.5</option>
+                  <option value="moonshine">Moonshine fallback</option>
+                  <option value="manual">Manual test mode</option>
+                </select>
+              </label>
+
+              <label>Laya endpoint
+                <input id="layaEndpoint" class="control" />
+              </label>
+
+              <label>Planner endpoint
+                <input id="plannerEndpoint" class="control" />
+              </label>
+
+              <label>Planner model
+                <input id="plannerModel" class="control" />
+              </label>
+            </div>
+
+            <div class="diagnostics">
+              <div><span>System</span><b id="systemInfo">Loading…</b></div>
+              <div><span>Speech benchmark</span><b id="benchmarkInfo">Not measured</b></div>
+              <div><span>Engine</span><b id="engineInfo">Checking…</b></div>
+            </div>
+
+            <div class="advanced-actions">
+              <button id="resetSetup" class="danger-ghost">Run setup again</button>
+            </div>
+          </div>
+        </details>
+
+        <footer class="dashboard-footer">
+          <span>Closing this window keeps ReflexDesk running in the system tray.</span>
+          <button id="hideWindow" class="text-button">Hide window</button>
+        </footer>
+      </section>
     </main>
   </body>
 </html>

@@ -1,15 +1,20 @@
 import { invoke } from "@tauri-apps/api/core";
+import { PhysicalPosition } from "@tauri-apps/api/dpi";
 import { emit, listen } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import {
+  cursorPosition,
+  getCurrentWindow,
+  monitorFromPoint,
+  primaryMonitor,
+} from "@tauri-apps/api/window";
 import { MicTranscriber, ModelArch } from "@moonshine-ai/moonshine-wasm";
 import { ParticleOrb } from "./lib/particles.js";
 
-const orb = new ParticleOrb(document.getElementById("orb"));
-orb.start();
-
+const root = document.getElementById("overlayRoot");
 const partial = document.getElementById("partialText");
 const stateText = document.getElementById("stateText");
-const root = document.getElementById("overlayRoot");
+const orb = new ParticleOrb(document.getElementById("orb"), { compact: true });
+orb.start();
 
 const SETTINGS_KEY = "reflexdesk.settings.v1";
 const TARGET_RATE = 16000;
@@ -29,19 +34,87 @@ let lastSpeechAt = 0;
 let preRoll = [];
 let utterance = [];
 let transcriptionQueue = Promise.resolve();
+let transientTimer = null;
 
 function settings() {
-  return {
-    sttProvider: "nemotron",
-    language: "auto",
-    ...JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}"),
-  };
+  return Object.assign(
+    {
+      sttProvider: "nemotron",
+      language: "auto",
+      overlayEnabled: true,
+    },
+    JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}"),
+  );
+}
+
+function applyVisualPreference() {
+  root.classList.toggle("visual-disabled", settings().overlayEnabled === false);
 }
 
 async function setupOverlayWindow() {
   const win = getCurrentWindow();
   await win.setAlwaysOnTop(true);
   await win.setIgnoreCursorEvents(true);
+}
+
+async function positionOverlay() {
+  try {
+    let monitor = null;
+    try {
+      const cursor = await cursorPosition();
+      monitor = await monitorFromPoint(cursor.x, cursor.y);
+    } catch {}
+
+    if (!monitor) monitor = await primaryMonitor();
+    if (!monitor) return;
+
+    const win = getCurrentWindow();
+    const size = await win.outerSize();
+    const scale = Number(monitor.scaleFactor || 1);
+    const gap = Math.round(56 * scale);
+
+    const area = monitor.workArea || {
+      position: monitor.position,
+      size: monitor.size,
+    };
+
+    const x =
+      area.position.x
+      + Math.round((area.size.width - size.width) / 2);
+    const y =
+      area.position.y
+      + area.size.height
+      - size.height
+      - gap;
+
+    await win.setPosition(new PhysicalPosition(x, y));
+  } catch (error) {
+    console.warn("Could not position Reflex overlay", error);
+  }
+}
+
+function setVisualState(state, message) {
+  if (transientTimer) clearTimeout(transientTimer);
+
+  orb.setState(state);
+  root.dataset.state = state;
+
+  if (message) {
+    partial.textContent = message;
+    root.classList.add("show-caption");
+  } else if (!["error", "warning"].includes(state)) {
+    root.classList.remove("show-caption");
+  }
+
+  if (state === "success") {
+    transientTimer = setTimeout(function () {
+      if (active) {
+        orb.setState("listening");
+        root.dataset.state = "listening";
+        root.classList.remove("show-caption");
+      }
+    }, 420);
+  }
 }
 
 function resampleTo16k(input, inputRate) {
@@ -60,11 +133,16 @@ function resampleTo16k(input, inputRate) {
     const end = Math.max(start + 1, Math.floor((i + 1) * ratio));
     let sum = 0;
     let count = 0;
+
     for (let j = start; j < end && j < input.length; j += 1) {
       sum += input[j];
       count += 1;
     }
-    const sample = count ? sum / count : input[Math.min(start, input.length - 1)];
+
+    const sample = count
+      ? sum / count
+      : input[Math.min(start, input.length - 1)];
+
     output[i] = Math.max(-32768, Math.min(32767, Math.round(sample * 32767)));
   }
 
@@ -104,41 +182,43 @@ function finalizeNemotronUtterance() {
   transcriptionQueue = transcriptionQueue.then(async function () {
     if (!active || voice.sttProvider !== "nemotron") return;
 
-    stateText.textContent = "TRANSCRIBING · NEMOTRON 3.5";
-    root.classList.add("working");
-    orb.setLevel(0.78);
+    stateText.textContent = "TRANSCRIBING";
+    setVisualState("transcribing");
 
     try {
       const result = await invoke("stt_transcribe", {
-        samples,
+        samples: samples,
         sampleRate: TARGET_RATE,
         language: voice.language || "auto",
       });
+
+      if (!active) return;
+
       const text = String(result && result.text ? result.text : "").trim();
       if (text) {
         partial.textContent = text;
+        root.classList.add("show-caption");
         await emit("reflexdesk://transcript", {
-          text,
+          text: text,
           sttLatencyMs: result.latency_ms,
         });
       }
     } catch (error) {
+      if (!active) return;
       const message = String(error);
-      partial.textContent = message;
+      setVisualState("error", message.slice(0, 90));
+
       if (
         message.toLowerCase().includes("starting")
-        || message.toLowerCase().includes("downloading")
+        || message.toLowerCase().includes("preparing")
       ) {
         nemotronReady = false;
         pollNemotron();
       }
     } finally {
-      root.classList.remove("working");
-      if (active) {
-        stateText.textContent = nemotronReady
-          ? "LISTENING · NEMOTRON 3.5"
-          : "SETTING UP NEMOTRON 3.5";
-        orb.setLevel(0.2);
+      if (active && root.dataset.state !== "error") {
+        stateText.textContent = nemotronReady ? "LISTENING" : "PREPARING";
+        orb.setState(nemotronReady ? "listening" : "thinking");
       }
     }
   });
@@ -157,6 +237,9 @@ function processNemotronFrame(input, inputRate, rms) {
       preRoll = [];
     }
     lastSpeechAt = now;
+    orb.setState("hearing");
+  } else if (!speaking) {
+    orb.setState("listening");
   }
 
   if (speaking) {
@@ -182,36 +265,61 @@ async function setupAudio() {
     },
   });
 
+  for (const track of stream.getAudioTracks()) {
+    track.addEventListener("ended", async function () {
+      if (!active) return;
+      setVisualState("error", "Microphone disconnected");
+      try {
+        await emit("reflexdesk://attention", {
+          kind: "microphone_disconnected",
+          message: "Your microphone disconnected. Reconnect it and start listening again.",
+        });
+        await invoke("set_listening", { active: false });
+      } catch {}
+    });
+  }
+
   const context = new AudioContext();
+  context.onstatechange = function () {
+    if (active && context.state === "suspended") {
+      context.resume().catch(function () {});
+    }
+  };
   await context.resume();
+  await context.audioWorklet.addModule("/audio-worklet.js");
 
   const source = context.createMediaStreamSource(stream);
-  const analyser = context.createAnalyser();
-  analyser.fftSize = 512;
-  source.connect(analyser);
+  const processor = new AudioWorkletNode(context, "reflex-audio-processor");
+  const silent = context.createGain();
+  silent.gain.value = 0;
 
-  const processor = context.createScriptProcessor(4096, 1, 1);
   source.connect(processor);
-  processor.connect(context.destination);
+  processor.connect(silent);
+  silent.connect(context.destination);
 
-  processor.onaudioprocess = function (event) {
-    const input = event.inputBuffer.getChannelData(0);
+  processor.port.onmessage = function (event) {
+    if (!active) return;
+    const input = event.data;
     const rms = rmsOf(input);
-    orb.setLevel(active ? Math.min(1, 0.14 + rms * 6.6) : 0.04);
+    orb.setLevel(Math.min(1, 0.12 + rms * 7));
     processNemotronFrame(input, context.sampleRate, rms);
   };
 
-  audio = { stream, context, source, analyser, processor };
+  audio = { stream, context, source, processor, silent };
 }
 
 async function teardownAudio() {
   resetUtterance();
 
   if (!audio) return;
+
+  try { audio.processor.port.onmessage = null; } catch {}
   try { audio.processor.disconnect(); } catch {}
   try { audio.source.disconnect(); } catch {}
-  try { audio.analyser.disconnect(); } catch {}
+  try { audio.silent.disconnect(); } catch {}
+
   for (const track of audio.stream.getTracks()) track.stop();
+
   try { await audio.context.close(); } catch {}
   audio = null;
 }
@@ -223,24 +331,30 @@ async function ensureMoonshine() {
   try {
     const voice = settings();
     const language = voice.language === "auto" ? "en" : voice.language;
-    stateText.textContent = "LOADING MOONSHINE FALLBACK";
+
+    stateText.textContent = "PREPARING";
+    setVisualState("thinking");
 
     moonshine = new MicTranscriber()
       .language(language)
       .modelArch(ModelArch.MediumStreaming)
-      .onText(function (text) { partial.textContent = text || ""; })
+      .onText(function (text) {
+        partial.textContent = text || "";
+      })
       .onLine(function (line) {
         const text = String(line && line.text ? line.text : "").trim();
-        if (text) emit("reflexdesk://transcript", { text });
+        if (text && active) emit("reflexdesk://transcript", { text: text });
         partial.textContent = "";
       });
 
     await moonshine.load();
     if (active) await moonshine.start();
-    stateText.textContent = "LISTENING · MOONSHINE";
+
+    stateText.textContent = "LISTENING";
+    setVisualState("listening");
   } catch (error) {
     console.error("Moonshine unavailable", error);
-    partial.textContent = "Moonshine unavailable: " + String(error);
+    setVisualState("error", "Local speech fallback unavailable");
     moonshine = null;
   } finally {
     sttStarting = false;
@@ -264,9 +378,11 @@ function pollNemotron() {
     try {
       const status = await invoke("stt_status");
       nemotronReady = Boolean(status.ready);
+
       if (nemotronReady) {
-        stateText.textContent = "LISTENING · NEMOTRON 3.5";
+        stateText.textContent = "LISTENING";
         partial.textContent = "";
+        setVisualState("listening");
         clearReadyPoll();
       }
     } catch {}
@@ -274,66 +390,87 @@ function pollNemotron() {
 }
 
 async function ensureNemotron() {
-  stateText.textContent = "SETTING UP NEMOTRON 3.5";
-  partial.textContent = "First run downloads the local ~458 MB model.";
+  stateText.textContent = "PREPARING";
+  setVisualState("thinking", "Preparing local speech…");
 
   try {
-    const status = await invoke("stt_start");
+    await invoke("prepare_engine");
+    const status = await invoke("stt_status");
     nemotronReady = Boolean(status.ready);
+
     if (nemotronReady) {
-      stateText.textContent = "LISTENING · NEMOTRON 3.5";
+      stateText.textContent = "LISTENING";
       partial.textContent = "";
+      setVisualState("listening");
     } else {
       pollNemotron();
     }
   } catch (error) {
     nemotronReady = false;
-    partial.textContent = "Nemotron unavailable: " + String(error);
-    stateText.textContent = "NEMOTRON RUNTIME ERROR";
+    setVisualState("error", "Local speech engine unavailable");
   }
 }
 
 async function ensureStt() {
   const provider = settings().sttProvider || "nemotron";
+
   if (provider === "manual") {
-    stateText.textContent = "VOICE VISUALIZER";
+    stateText.textContent = "LISTENING";
+    setVisualState("listening");
     return;
   }
+
   if (provider === "moonshine") {
     await ensureMoonshine();
     return;
   }
+
   await ensureNemotron();
 }
 
 async function applyActive(next) {
   active = Boolean(next);
   root.classList.toggle("listening", active);
+  applyVisualPreference();
 
   if (active) {
-    stateText.textContent = "STARTING LOCAL VOICE";
+    await positionOverlay();
+    try { await getCurrentWindow().show(); } catch {}
+    stateText.textContent = "STARTING";
+    setVisualState("listening");
+
     try {
       await setupAudio();
       await ensureStt();
     } catch (error) {
-      stateText.textContent = "MIC BLOCKED";
-      partial.textContent = String(error);
+      stateText.textContent = "MICROPHONE";
+      setVisualState("error", "Microphone permission is required");
     }
-  } else {
-    clearReadyPoll();
-    nemotronReady = false;
-    if (moonshine) {
-      try { await moonshine.stop(); } catch {}
-    }
-    await teardownAudio();
-    partial.textContent = "";
-    stateText.textContent = "PAUSED";
-    orb.setLevel(0.04);
-    try { await getCurrentWindow().hide(); } catch {}
+    return;
   }
+
+  clearReadyPoll();
+  nemotronReady = false;
+
+  if (moonshine) {
+    try { await moonshine.stop(); } catch {}
+  }
+
+  await teardownAudio();
+  partial.textContent = "";
+  stateText.textContent = "";
+  setVisualState("idle");
+  root.classList.remove("show-caption");
+
+  try { await getCurrentWindow().hide(); } catch {}
 }
 
 setupOverlayWindow();
+applyVisualPreference();
+
+listen("reflexdesk://settings", function () {
+  applyVisualPreference();
+});
 
 listen("reflexdesk://active", function (event) {
   applyActive(event.payload);
@@ -341,21 +478,32 @@ listen("reflexdesk://active", function (event) {
 
 listen("reflexdesk://stt-status", function (event) {
   if (!active || settings().sttProvider !== "nemotron") return;
-  const message = String(event.payload && event.payload.message ? event.payload.message : "");
-  if (message) {
-    partial.textContent = message.replace(/\x1b\[[0-9;]*m/g, "").slice(0, 120);
+
+  const message = String(
+    event.payload && event.payload.message ? event.payload.message : "",
+  ).replace(/\x1b\[[0-9;]*m/g, "");
+
+  if (message && !nemotronReady) {
+    partial.textContent = "Preparing local speech…";
+    root.classList.add("show-caption");
   }
 });
 
-listen("reflexdesk://working", function (event) {
-  root.classList.toggle("working", Boolean(event.payload));
-  if (event.payload) {
-    stateText.textContent = "WORKING";
-    orb.setLevel(0.82);
-  } else if (active) {
-    stateText.textContent =
-      settings().sttProvider === "nemotron" && nemotronReady
-        ? "LISTENING · NEMOTRON 3.5"
-        : "LISTENING";
-  }
+listen("reflexdesk://visual-state", function (event) {
+  if (!active) return;
+
+  const payload = event.payload;
+  const state =
+    typeof payload === "string"
+      ? payload
+      : payload && payload.state
+        ? payload.state
+        : "listening";
+
+  const message =
+    payload && typeof payload === "object" && payload.message
+      ? String(payload.message).slice(0, 90)
+      : "";
+
+  setVisualState(state, message);
 });

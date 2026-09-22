@@ -20,3 +20,18 @@ test("routes browser search", () => {
 test("unknown command escalates", () => {
   assert.equal(routeFast("compare my last three invoices").kind, "planner");
 });
+
+test("routes onboarding voice proof deterministically", () => {
+  assert.deepEqual(routeFast("hello reflexdesk"), {
+    kind: "control",
+    action: "reflex.ping",
+    args: {},
+    confidence: 0.99,
+  });
+});
+
+test("routes stop listening without planner", () => {
+  const route = routeFast("stop listening");
+  assert.equal(route.kind, "control");
+  assert.equal(route.action, "voice.stop");
+});
