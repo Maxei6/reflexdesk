@@ -73,14 +73,15 @@ No public/local network listener is preferred.
 - Cleans up session PCM buffers and active pre-routing state.
 
 ### 7. Compare latency/WER against current HTTP path
-- **Status:** Complete.
+- **Status:** Partial (seam + live tracker complete; on-machine measurement open).
 - Baseline metrics tracking implemented in `src-tauri/src/stt/native.rs` (`SttBaselineMetrics`, `BaselineTracker`):
-  - HTTP p50 speech-end latency baseline: 180 ms.
-  - HTTP p95 speech-end latency baseline: 320 ms.
-  - HTTP Word Error Rate (WER): 0.042 (measured on command benchmark).
-  - Native target speech-end latency: 45 ms.
+  - HTTP p50 speech-end latency: unmeasured (`None`) until reproducibly measured on-machine.
+  - HTTP p95 speech-end latency: unmeasured (`None`) until reproducibly measured on-machine.
+  - HTTP Word Error Rate (WER): unmeasured (`None`) until reproducibly measured on-machine.
+  - Native target speech-end latency: 45 ms (design target, not a measurement).
   - `insecure_listener_prevented: true`.
-  - Dynamic tracker observes actual HTTP latency across runs (`record_latency`).
+  - Dynamic tracker observes actual HTTP latency across runs (`record_latency` -> `mean_observed_http_latency_ms`); only observed values are reported.
+  - Per AGENTS.md #10, earlier draft figures (180/320/0.042) were removed from code, tests, and this plan because they were never reproducibly measured.
 
 ### 8. Retain HTTP path as fallback during migration
 - **Status:** Complete.
@@ -90,6 +91,5 @@ No public/local network listener is preferred.
 
 - Streaming path provides incremental AudioWorklet -> Rust bridge with speculative pre-routing.
 - No unauthenticated realtime network listener is opened (`0.0.0.0` WebSocket disabled).
-- Speculative pre-routing warms the reflex cache for 0 ms execution upon final transcript submission.
-- Transcript nonce gating and PII redaction enforced at all partial boundaries.
-- Unit and integration tests pass (47/47 passing tests).
+- Speculative pre-routing warms the reflex cache to reduce execution latency upon final transcript submission (reduction unmeasured).
+- Unit and integration tests pass (full JS suite 96/96 green as of 2026-09-22, including `tests/stt_streaming.test.mjs`; Rust tests not yet run — no toolchain in this environment).
