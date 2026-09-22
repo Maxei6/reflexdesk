@@ -1,5 +1,6 @@
 use serde::Serialize;
 use std::process::Command;
+use crate::process_supervisor::ProcessSupervisor;
 
 #[derive(Serialize)]
 pub struct HarnessStatus {
@@ -30,7 +31,7 @@ pub fn detect_all() -> Vec<HarnessStatus> {
         .collect()
 }
 
-pub fn launch(harness: &str, prompt: &str, cwd: Option<&str>) -> Result<(), String> {
+pub fn launch(harness: &str, prompt: &str, cwd: Option<&str>, supervisor: &ProcessSupervisor) -> Result<(), String> {
     let exe = match harness.to_lowercase().as_str() {
         "opencode" => "opencode",
         "kilo" => "kilo",
@@ -54,5 +55,7 @@ pub fn launch(harness: &str, prompt: &str, cwd: Option<&str>) -> Result<(), Stri
     if !prompt.is_empty() && exe == "codex" {
         child.arg("exec").arg(prompt);
     }
-    child.spawn().map(|_| ()).map_err(|e| e.to_string())
+    let child = child.spawn().map_err(|e| e.to_string())?;
+    let label = format!("harness:{exe}:{}", child.id());
+    supervisor.track(label, child)
 }
