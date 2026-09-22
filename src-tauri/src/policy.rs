@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
-
+use std::time::{Duration, Instant};
 // ---------------------------------------------------------------------------
 // Frozen enums (serde renames are part of the contract)
 // ---------------------------------------------------------------------------
@@ -425,6 +425,242 @@ pub fn is_confirmation_id(id: &str) -> bool {
     hex.as_bytes()[14] == b'4'
 }
 
+// ---------------------------------------------------------------------------
+// Pending confirmation store & helpers
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub struct PendingConfirmation {
+    pub envelope: ActionEnvelope,
+    pub issued_at: Instant,
+    pub decided: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfirmationRequest {
+    pub id: String,
+    pub confirmation_id: String,
+    pub tool: String,
+    pub risk: RiskClass,
+    pub args_summary: String,
+}
+
+static PENDING_CONFIRMATIONS: Mutex<Option<HashMap<String, PendingConfirmation>>> = Mutex::new(None);
+
+fn pending_confirmations_map() -> std::sync::MutexGuard<'static, Option<HashMap<String, PendingConfirmation>>> {
+    PENDING_CONFIRMATIONS.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// 10 minutes timeout for pending confirmations (auto-deny on expiration).
+pub const CONFIRMATION_TTL: Duration = Duration::from_secs(600);
+
+/// Summarize arguments safely via `crate::redaction::redact_text` per value.
+/// User content or secret fragments are never included verbatim.
+pub fn summarize_args(args: &serde_json::Value) -> String {
+    match args {
+        serde_json::Value::Object(map) => {
+            if map.is_empty() {
+                return "(none)".to_string();
+            }
+            let mut parts: Vec<String> = Vec::with_capacity(map.len());
+            for (key, val) in map {
+                let redacted_val = match val {
+                    serde_json::Value::String(s) => crate::redaction::redact_text(s),
+                    _ => crate::redaction::redact_text(&val.to_string()),
+                };
+                parts.push(format!("{key}={redacted_val}"));
+            }
+            parts.sort();
+            parts.join(", ")
+        }
+        serde_json::Value::Null => "(none)".to_string(),
+        other => crate::redaction::redact_text(&other.to_string()).into_owned(),
+    }
+}
+
+/// Issue a confirmation request for an action envelope.
+/// Returns `{id, confirmation_id, tool, risk, args_summary}`.
+/// Cleans up expired entries (> 10 min) on each call.
+pub fn issue_confirmation(envelope: ActionEnvelope) -> ConfirmationRequest {
+    let now = Instant::now();
+    let id = new_confirmation_id();
+    let args_summary = summarize_args(&envelope.args);
+    let req = ConfirmationRequest {
+        id: id.clone(),
+        confirmation_id: id.clone(),
+        tool: envelope.tool.clone(),
+        risk: envelope.risk,
+        args_summary,
+    };
+
+    let mut guard = pending_confirmations_map();
+    let map = guard.get_or_insert_with(HashMap::new);
+
+    // Evict expired entries (> 10 min)
+    map.retain(|_, entry| now.duration_since(entry.issued_at) <= CONFIRMATION_TTL);
+
+    map.insert(
+        id,
+        PendingConfirmation {
+            envelope,
+            issued_at: now,
+            decided: None,
+        },
+    );
+
+    req
+}
+
+/// Resolve a pending confirmation.
+/// Returns `Some(ActionEnvelope)` if approved and valid (not expired).
+/// Returns `None` if denied, expired (> 10 min auto-deny), or not found.
+/// Lost-focus keeps the entry pending until explicit resolution or expiration.
+pub fn resolve_confirmation(id: &str, approve: bool) -> Option<ActionEnvelope> {
+    let now = Instant::now();
+    let mut guard = pending_confirmations_map();
+    let map = guard.as_mut()?;
+
+    // Evict expired entries (> 10 min auto-deny)
+    map.retain(|_, entry| now.duration_since(entry.issued_at) <= CONFIRMATION_TTL);
+
+    let entry = map.remove(id)?;
+    if now.duration_since(entry.issued_at) > CONFIRMATION_TTL {
+        return None;
+    }
+
+    if approve {
+        Some(entry.envelope)
+    } else {
+        None
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Request action decision & preparation (core gate)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum PolicyDecision {
+    ExecuteNow {
+        sanitized_args: serde_json::Value,
+    },
+    NeedConfirm {
+        confirmation_id: String,
+        tool: String,
+        risk: RiskClass,
+        args_summary: String,
+    },
+    Denied {
+        reason: String,
+    },
+}
+
+/// Core decision logic for `request_action`.
+/// Validates args fail-closed (`unknown-tool`/`invalid-args`),
+/// checks for caller-supplied negation text (`negation-detected`),
+/// maps `authorize` outcome, and enforces `is_cancelled` pre-check.
+pub fn decide_and_prepare(
+    envelope: &ActionEnvelope,
+    settings_text_for_negation: Option<&str>,
+) -> PolicyDecision {
+    let settings = AppSettings::default();
+    decide_and_prepare_with_settings(envelope, settings_text_for_negation, &settings)
+}
+
+/// Variant of `decide_and_prepare` with explicit `AppSettings`.
+pub fn decide_and_prepare_with_settings(
+    envelope: &ActionEnvelope,
+    settings_text_for_negation: Option<&str>,
+    settings: &AppSettings,
+) -> PolicyDecision {
+    // 1. is_cancelled pre-check
+    if is_cancelled(&envelope.session_id) {
+        return PolicyDecision::Denied {
+            reason: "session-cancelled".to_string(),
+        };
+    }
+
+    // 2. is_negated_command check on caller-supplied text
+    if let Some(text) = settings_text_for_negation {
+        if is_negated_command(text) {
+            return PolicyDecision::Denied {
+                reason: "negation-detected".to_string(),
+            };
+        }
+    }
+
+    // 3. validate_args fail-closed (unknown-tool / invalid-args)
+    let sanitized_args = match validate_args(&envelope.tool, &envelope.args) {
+        Ok(args) => args,
+        Err(err) => return PolicyDecision::Denied { reason: err },
+    };
+
+    // 4. authorize outcome mapping
+    match authorize(envelope, settings) {
+        PolicyOutcome::Deny => PolicyDecision::Denied {
+            reason: "policy-denied".to_string(),
+        },
+        PolicyOutcome::RequireUnlock => PolicyDecision::Denied {
+            reason: "require-unlock".to_string(),
+        },
+        PolicyOutcome::Confirm => {
+            let mut env_to_confirm = envelope.clone();
+            env_to_confirm.args = sanitized_args;
+            let req = issue_confirmation(env_to_confirm);
+            PolicyDecision::NeedConfirm {
+                confirmation_id: req.confirmation_id,
+                tool: req.tool,
+                risk: req.risk,
+                args_summary: req.args_summary,
+            }
+        }
+        PolicyOutcome::Allow => PolicyDecision::ExecuteNow { sanitized_args },
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Post-execution verification & delayed execution guard
+// ---------------------------------------------------------------------------
+
+/// Post-execution `verify` hook point. Returns `Ok(())` for `kind == "none"`,
+/// typed `unverifiable` Err otherwise (Wave-2 desktop/browser fill real kinds).
+pub fn verify_stub(contract: &VerificationContract) -> Result<(), String> {
+    if contract.kind == "none" {
+        Ok(())
+    } else {
+        Err(format!(
+            "unverifiable: unsupported verification kind '{}'",
+            contract.kind
+        ))
+    }
+}
+
+/// Delayed-completion guard: returns true if the session has not been cancelled.
+pub fn still_executable(session_id: &str, _gen_at_issue: u64) -> bool {
+    !is_cancelled(session_id)
+}
+
+/// Action execution result payload.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActionExecutionResult {
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verification: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confirmation_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub risk: Option<RiskClass>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub args_summary: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -485,5 +721,137 @@ mod tests {
         assert!(is_confirmation_id(&id));
         assert!(!is_confirmation_id("confirm:not-a-uuid"));
         assert!(!is_confirmation_id("other:12345678-1234-4234-8234-1234567890ab"));
+    }
+    #[test]
+    fn decide_and_prepare_negation_denies() {
+        let env = envelope("app.open", RiskClass::Sensitive);
+        let dec = decide_and_prepare(&env, Some("don't close Chrome"));
+        match dec {
+            PolicyDecision::Denied { reason } => assert_eq!(reason, "negation-detected"),
+            _ => panic!("expected negation-detected Denied, got {dec:?}"),
+        }
+    }
+
+    #[test]
+    fn decide_and_prepare_cancelled_session_denies() {
+        let env = ActionEnvelope {
+            tool: "browser.search".into(),
+            args: serde_json::json!({ "query": "hello" }),
+            source: ActionSource::User,
+            session_id: "cancelled-session-1".into(),
+            risk: RiskClass::Safe,
+            capability: "browser.open".into(),
+            verification: VerificationContract::default(),
+        };
+        cancel_session("cancelled-session-1");
+        let dec = decide_and_prepare(&env, None);
+        match dec {
+            PolicyDecision::Denied { reason } => assert_eq!(reason, "session-cancelled"),
+            _ => panic!("expected session-cancelled Denied, got {dec:?}"),
+        }
+        clear_session("cancelled-session-1");
+    }
+
+    #[test]
+    fn decide_and_prepare_unknown_tool_denies() {
+        let env = envelope("system.format", RiskClass::Destructive);
+        let dec = decide_and_prepare(&env, None);
+        match dec {
+            PolicyDecision::Denied { reason } => assert!(reason.starts_with("unknown-tool")),
+            _ => panic!("expected unknown-tool Denied, got {dec:?}"),
+        }
+    }
+
+    #[test]
+    fn decide_and_prepare_safe_tool_executes_now() {
+        let env = ActionEnvelope {
+            tool: "browser.search".into(),
+            args: serde_json::json!({ "query": "rust language" }),
+            source: ActionSource::User,
+            session_id: "safe-session".into(),
+            risk: RiskClass::Safe,
+            capability: "browser.open".into(),
+            verification: VerificationContract::default(),
+        };
+        let dec = decide_and_prepare(&env, None);
+        match dec {
+            PolicyDecision::ExecuteNow { sanitized_args } => {
+                assert_eq!(sanitized_args["query"], "rust language");
+            }
+            _ => panic!("expected ExecuteNow, got {dec:?}"),
+        }
+    }
+
+    #[test]
+    fn decide_and_prepare_confirm_and_resolve_flow() {
+        let env = ActionEnvelope {
+            tool: "app.open".into(),
+            args: serde_json::json!({ "app": "calculator" }),
+            source: ActionSource::User,
+            session_id: "confirm-session".into(),
+            risk: RiskClass::Sensitive,
+            capability: "desktop.launch".into(),
+            verification: VerificationContract::default(),
+        };
+        let dec = decide_and_prepare(&env, None);
+        let cid = match dec {
+            PolicyDecision::NeedConfirm { confirmation_id, tool, risk, args_summary } => {
+                assert_eq!(tool, "app.open");
+                assert_eq!(risk, RiskClass::Sensitive);
+                assert!(args_summary.contains("app=calculator"));
+                assert!(is_confirmation_id(&confirmation_id));
+                confirmation_id
+            }
+            _ => panic!("expected NeedConfirm, got {dec:?}"),
+        };
+
+        // Resolve approve
+        let approved = resolve_confirmation(&cid, true);
+        assert!(approved.is_some());
+        assert_eq!(approved.unwrap().tool, "app.open");
+
+        // Second resolve is None
+        assert!(resolve_confirmation(&cid, true).is_none());
+    }
+
+    #[test]
+    fn resolve_confirmation_deny() {
+        let env = ActionEnvelope {
+            tool: "app.open".into(),
+            args: serde_json::json!({ "app": "notepad" }),
+            source: ActionSource::User,
+            session_id: "deny-session".into(),
+            risk: RiskClass::Sensitive,
+            capability: "desktop.launch".into(),
+            verification: VerificationContract::default(),
+        };
+        let req = issue_confirmation(env);
+        let resolved = resolve_confirmation(&req.confirmation_id, false);
+        assert!(resolved.is_none());
+        assert!(resolve_confirmation(&req.confirmation_id, true).is_none());
+    }
+
+    #[test]
+    fn verify_stub_behavior() {
+        let none_contract = VerificationContract::default();
+        assert!(verify_stub(&none_contract).is_ok());
+
+        let visual_contract = VerificationContract {
+            kind: "visual-diff".into(),
+            selector: None,
+            expect: serde_json::Value::Null,
+            timeout_ms: 1000,
+        };
+        assert!(verify_stub(&visual_contract).is_err());
+    }
+
+    #[test]
+    fn still_executable_tracks_cancellation() {
+        let sid = "session-executable-test";
+        assert!(still_executable(sid, 0));
+        cancel_session(sid);
+        assert!(!still_executable(sid, 0));
+        clear_session(sid);
+        assert!(still_executable(sid, 0));
     }
 }

@@ -401,9 +401,13 @@ async function refreshDiagnostics() {
     const values = await Promise.all([
       invoke("get_system_profile"),
       invoke("stt_status"),
+      invoke("get_model_cache_size").catch(() => 0),
+      invoke("get_model_status", { modelId: "nemotron-3.5-asr-streaming-0.6b" }).catch(() => null),
     ]);
     const profile = values[0];
     const speech = values[1];
+    const cacheBytes = Number(values[2] || 0);
+    const modelStatus = values[3];
 
     $("systemInfo").textContent =
       profile.os + " · " + profile.arch + " · " + profile.logical_cpus
@@ -414,8 +418,231 @@ async function refreshDiagnostics() {
       : speech.running
         ? "Starting local engine"
         : "Local engine stopped";
+
+    if ($("modelCacheInfo")) {
+      const mb = (cacheBytes / (1024 * 1024)).toFixed(1);
+      $("modelCacheInfo").textContent = mb + " MB on disk";
+    }
+
+    if ($("modelBackendInfo") && modelStatus) {
+      $("modelBackendInfo").textContent = modelStatus.verified
+        ? "Nemotron 3.5 Q4_K (Verified Active)"
+        : "Nemotron 3.5 (" + modelStatus.state + ")";
+    }
   } catch {
     $("systemInfo").textContent = "Diagnostics unavailable";
+  }
+}
+const TOOL_RISK_MAP = {
+  "app.open": "sensitive",
+  "browser.open": "sensitive",
+  "browser.search": "safe",
+  "harness.start": "external_commit",
+};
+
+function newSessionId() {
+  try {
+    return crypto.randomUUID();
+  } catch {
+    return "s_" + Math.random().toString(16).slice(2) + Date.now().toString(16);
+  }
+}
+
+function buildActionEnvelope(tool, args, source) {
+  return {
+    tool: String(tool || ""),
+    args: args && typeof args === "object" ? args : {},
+    source: source,
+    session_id: newSessionId(),
+    risk: TOOL_RISK_MAP[tool] || "sensitive",
+    capability: TOOL_CAPABILITY_MAP[tool] || tool,
+    verification: {
+      kind: "none",
+      selector: null,
+      expect: null,
+      timeout_ms: 2000,
+    },
+  };
+}
+
+let activeConfirmationModal = null;
+
+function showConfirmationModal(req, onDecision) {
+  if (activeConfirmationModal) {
+    activeConfirmationModal.remove();
+    activeConfirmationModal = null;
+  }
+
+  const overlay = document.createElement("div");
+  overlay.className = "policy-modal-backdrop";
+  overlay.style.position = "fixed";
+  overlay.style.inset = "0";
+  overlay.style.background = "rgba(0, 0, 0, 0.78)";
+  overlay.style.display = "flex";
+  overlay.style.alignItems = "center";
+  overlay.style.justifyContent = "center";
+  overlay.style.zIndex = "9999";
+  overlay.style.backdropFilter = "blur(6px)";
+
+  const card = document.createElement("div");
+  card.className = "policy-modal-card";
+  card.style.background = "#121212";
+  card.style.border = "1px solid #2a2a2a";
+  card.style.borderRadius = "18px";
+  card.style.padding = "24px";
+  card.style.width = "min(480px, calc(100vw - 32px))";
+  card.style.boxShadow = "0 24px 80px rgba(0, 0, 0, 0.6)";
+  card.style.display = "grid";
+  card.style.gap = "16px";
+  card.style.color = "#f4f4f4";
+
+  const header = document.createElement("div");
+  header.style.display = "grid";
+  header.style.gap = "4px";
+
+  const kicker = document.createElement("span");
+  kicker.className = "kicker";
+  kicker.textContent = "POLICY GATE · CONFIRMATION REQUIRED";
+
+  const title = document.createElement("h2");
+  title.style.margin = "0";
+  title.style.fontSize = "18px";
+  title.style.fontWeight = "600";
+  title.textContent = "Approve Action Execution";
+
+  header.appendChild(kicker);
+  header.appendChild(title);
+  card.appendChild(header);
+
+  const details = document.createElement("div");
+  details.style.display = "grid";
+  details.style.gap = "8px";
+  details.style.background = "#181818";
+  details.style.border = "1px solid #242424";
+  details.style.borderRadius = "10px";
+  details.style.padding = "12px 14px";
+  details.style.fontSize = "13px";
+
+  function addRow(labelStr, valStr) {
+    const row = document.createElement("div");
+    row.style.display = "flex";
+    row.style.justifyContent = "space-between";
+    row.style.alignItems = "flex-start";
+    row.style.gap = "12px";
+
+    const lbl = document.createElement("span");
+    lbl.style.color = "#888";
+    lbl.style.flexShrink = "0";
+    lbl.textContent = labelStr;
+
+    const val = document.createElement("span");
+    val.style.fontWeight = "550";
+    val.style.wordBreak = "break-word";
+    val.textContent = valStr;
+
+    row.appendChild(lbl);
+    row.appendChild(val);
+    details.appendChild(row);
+  }
+
+  addRow("Tool", req.tool || "unknown");
+  addRow("Risk", (req.risk || "unknown").toUpperCase());
+  if (req.args_summary) {
+    addRow("Arguments", req.args_summary);
+  }
+
+  card.appendChild(details);
+
+  const actions = document.createElement("div");
+  actions.style.display = "flex";
+  actions.style.justifyContent = "flex-end";
+  actions.style.gap = "10px";
+  actions.style.marginTop = "8px";
+
+  const denyBtn = document.createElement("button");
+  denyBtn.className = "secondary";
+  denyBtn.textContent = "Deny";
+  denyBtn.style.minWidth = "88px";
+
+  const approveBtn = document.createElement("button");
+  approveBtn.className = "primary";
+  approveBtn.textContent = "Approve";
+  approveBtn.style.minWidth = "88px";
+
+  function cleanup() {
+    if (activeConfirmationModal) {
+      activeConfirmationModal.remove();
+      activeConfirmationModal = null;
+    }
+  }
+
+  denyBtn.addEventListener("click", function () {
+    cleanup();
+    onDecision(false);
+  });
+
+  approveBtn.addEventListener("click", function () {
+    cleanup();
+    onDecision(true);
+  });
+
+  actions.appendChild(denyBtn);
+  actions.appendChild(approveBtn);
+  card.appendChild(actions);
+
+  overlay.appendChild(card);
+  document.body.appendChild(overlay);
+  activeConfirmationModal = overlay;
+
+  approveBtn.focus();
+}
+
+async function requestActionWithConfirmation(envelope, rawText) {
+  const res = await invoke("request_action", {
+    envelope: envelope,
+    rawText: rawText,
+    raw_text: rawText,
+  });
+
+  if (res && (res.status === "confirm" || res.status === "need_confirm")) {
+    const confirmationId = res.confirmation_id || res.id;
+    return new Promise(function (resolve) {
+      showConfirmationModal(res, async function (approve) {
+        try {
+          const confirmRes = await invoke("confirm_action", {
+            confirmationId: confirmationId,
+            confirmation_id: confirmationId,
+            approve: approve,
+          });
+          resolve(confirmRes);
+        } catch (err) {
+          resolve({ status: "deny", reason: String(err) });
+        }
+      });
+    });
+  }
+
+  return res;
+}
+
+function handleActionResult(result) {
+  if (!result) return;
+  if (result.status === "deny" || result.status === "denied") {
+    $("attentionBanner").classList.remove("hidden");
+    const reason = result.reason || "Action denied by policy gate.";
+    $("attentionText").textContent = reason;
+    dashboardOrb.setState("idle");
+  } else if (result.status === "cancelled") {
+    $("attentionBanner").classList.remove("hidden");
+    $("attentionText").textContent = "Action cancelled.";
+    dashboardOrb.setState("idle");
+  } else if (result.status === "error") {
+    $("attentionBanner").classList.remove("hidden");
+    $("attentionText").textContent = result.reason || "Action failed.";
+    dashboardOrb.setState("error");
+  } else if (result.status === "success") {
+    $("attentionBanner").classList.add("hidden");
+    dashboardOrb.setState("idle");
   }
 }
 
@@ -433,11 +660,9 @@ async function dispatchText(text) {
   }
 
   if (route.kind === "tool") {
-    if (route.action === "harness.start") {
-      const label = route.args && route.args.harness ? route.args.harness : "AI agent";
-      if (!window.confirm("Start " + label + " for this task?")) return;
-    }
-    await invoke("execute_tool", { name: route.action, args: route.args || {} });
+    const envelope = buildActionEnvelope(route.action, route.args || {}, "reflex");
+    const result = await requestActionWithConfirmation(envelope, cleanText);
+    handleActionResult(result);
     return;
   }
 
@@ -460,17 +685,11 @@ async function dispatchText(text) {
   });
 
   if (planned && planned.action && planned.action !== "unknown") {
-    if (planned.action === "harness.start") {
-      const label = planned.args && planned.args.harness ? planned.args.harness : "AI agent";
-      if (!window.confirm("Start " + label + " for this task?")) return;
-    }
-    await invoke("execute_tool", {
-      name: planned.action,
-      args: planned.args || {},
-    });
+    const envelope = buildActionEnvelope(planned.action, planned.args || {}, "planner");
+    const result = await requestActionWithConfirmation(envelope, cleanText);
+    handleActionResult(result);
   }
 }
-
 async function bootstrap() {
   settings = await invoke("get_app_settings");
   runtime = await invoke("get_runtime_status");
@@ -512,6 +731,34 @@ $("resetSetup").addEventListener("click", async function () {
   if (!window.confirm("Run first-time setup again? Your local model cache will be kept.")) return;
   settings = await invoke("reset_setup");
   showOnboarding();
+});
+
+if ($("repairModel")) {
+  $("repairModel").addEventListener("click", async function () {
+    try {
+      $("repairModel").disabled = true;
+      $("repairModel").textContent = "Repairing…";
+      await invoke("repair_model");
+      await refreshDiagnostics();
+    } catch (err) {
+      $("attentionBanner").classList.remove("hidden");
+      $("attentionText").textContent = "Model repair failed: " + String(err).slice(0, 200);
+    } finally {
+      $("repairModel").disabled = false;
+      $("repairModel").textContent = "Repair model";
+    }
+  });
+}
+
+listen("reflexdesk://model-progress", function (event) {
+  const payload = event.payload;
+  if (!payload) return;
+  const pct = Number(payload.total_bytes) > 0
+    ? Math.round((Number(payload.downloaded_bytes) / Number(payload.total_bytes)) * 100)
+    : 0;
+  if (!settings || !settings.setup_complete) {
+    setSetupBusy(true, payload.message || ("Downloading speech model: " + pct + "%"));
+  }
 });
 
 listen("reflexdesk://state", function (event) {

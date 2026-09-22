@@ -30,6 +30,10 @@
         "always"
       ]
     },
+    "external": {
+      "type": "boolean",
+      "description": "Whether this tool causes side effects outside the local application boundary. Destructive + external:true maps to EXTERNAL_COMMIT."
+    },
     "parameters": {
       "type": "object"
     }
