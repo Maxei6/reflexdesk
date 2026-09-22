@@ -79,7 +79,10 @@ fn set_listening_internal(app: &AppHandle, next: bool) -> Result<RuntimeSnapshot
     let current = runtime.snapshot();
 
     if next {
-        if !current.ready {
+        let app_settings = app.state::<SettingsState>().snapshot();
+        let requires_native_stt = app_settings.stt_provider == "nemotron";
+
+        if !current.ready && requires_native_stt {
             show_main(app);
             let _ = app.emit(
                 "reflexdesk://attention",
@@ -92,7 +95,7 @@ fn set_listening_internal(app: &AppHandle, next: bool) -> Result<RuntimeSnapshot
         }
 
         let stt_state = app.state::<stt::SttState>();
-        if !stt::status(app, &stt_state).ready {
+        if requires_native_stt && !stt::status(app, &stt_state).ready {
             let _ = update_runtime(
                 app,
                 Phase::Degraded,
@@ -195,7 +198,9 @@ fn start_watchdog(app: AppHandle) {
             continue;
         }
 
-        if matches!(runtime.phase, Phase::Ready | Phase::Listening) {
+        if settings.stt_provider == "nemotron"
+            && matches!(runtime.phase, Phase::Ready | Phase::Listening)
+        {
             let stt_state = app.state::<stt::SttState>();
             if !stt::status(&app, &stt_state).ready {
                 if runtime.listening {
@@ -255,11 +260,23 @@ fn save_app_settings(
     mut settings: AppSettings,
 ) -> Result<AppSettings, String> {
     settings.schema_version = settings::SETTINGS_SCHEMA_VERSION;
+    let previous = state.snapshot();
     settings::save(&app, &settings)?;
     state.replace(settings.clone())?;
 
     if settings.setup_complete {
         apply_autostart(&app, settings.start_at_login)?;
+
+        if previous.stt_provider != settings.stt_provider {
+            if settings.stt_provider == "nemotron" {
+                let _ = update_runtime(&app, Phase::Booting, None);
+                start_engine_background(app.clone());
+            } else {
+                let stt_state = app.state::<stt::SttState>();
+                let _ = stt::shutdown(&stt_state);
+                let _ = update_runtime(&app, Phase::Ready, None);
+            }
+        }
     }
 
     let _ = app.emit("reflexdesk://settings", &settings);
@@ -639,7 +656,11 @@ pub fn run() {
 
             if loaded_settings.setup_complete {
                 let _ = apply_autostart(app.handle(), loaded_settings.start_at_login);
-                start_engine_background(app.handle().clone());
+                if loaded_settings.stt_provider == "nemotron" {
+                    start_engine_background(app.handle().clone());
+                } else {
+                    let _ = update_runtime(app.handle(), Phase::Ready, None);
+                }
             } else {
                 let _ = update_runtime(app.handle(), Phase::SetupRequired, None);
                 show_main(app.handle());
