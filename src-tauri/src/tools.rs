@@ -1,6 +1,7 @@
 use serde::Serialize;
 use serde_json::Value;
 use std::process::Command;
+use crate::process_supervisor::ProcessSupervisor;
 
 #[derive(Serialize)]
 pub struct ToolResult {
@@ -72,7 +73,7 @@ fn open_app(app: &str) -> Result<(), String> {
     Err("unsupported platform".into())
 }
 
-pub fn execute(name: &str, args: &Value) -> Result<ToolResult, String> {
+pub fn execute(name: &str, args: &Value, supervisor: &ProcessSupervisor) -> Result<ToolResult, String> {
     match name {
         "app.open" => {
             let app = args.get("app").and_then(Value::as_str).ok_or("missing app")?;
@@ -97,7 +98,7 @@ pub fn execute(name: &str, args: &Value) -> Result<ToolResult, String> {
             let harness = args.get("harness").and_then(Value::as_str).ok_or("missing harness")?;
             let prompt = args.get("prompt").and_then(Value::as_str).unwrap_or("");
             let cwd = args.get("cwd").and_then(Value::as_str);
-            super::harness::launch(harness, prompt, cwd)?;
+            super::harness::launch(harness, prompt, cwd, supervisor)?;
             Ok(ToolResult { ok: true, message: format!("Started {harness}.") })
         }
         _ => Err(format!("unknown tool: {name}")),
