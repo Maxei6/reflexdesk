@@ -180,7 +180,7 @@ Structured ACP/SDK control and harness interrupt/resume are the target. UI scrap
 - reusable learned skills
 - signed / notarized installers
 
-See [docs/P0.md](docs/P0.md) for the desktop lifecycle/security design and [docs/MVP.md](docs/MVP.md) for the exact current boundary.
+See [docs/P0.md](docs/P0.md) for the desktop lifecycle/security design, [docs/MVP.md](docs/MVP.md) for the exact current boundary, and [docs/plans/README.md](docs/plans/README.md) for the production roadmap.
 
 ---
 
