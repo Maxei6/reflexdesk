@@ -1,4 +1,5 @@
 mod harness;
+mod stt;
 mod tools;
 
 use serde::Serialize;
@@ -20,14 +21,15 @@ struct Status {
 fn apply_listening(app: &tauri::AppHandle, state: &RuntimeState, next: bool) -> Result<Status, String> {
     *state.active.lock().map_err(|_| "state lock poisoned")? = next;
 
-    if let Some(overlay) = app.get_webview_window("overlay") {
-        if next {
+    if next {
+        if let Some(overlay) = app.get_webview_window("overlay") {
             overlay.show().map_err(|e| e.to_string())?;
-        } else {
-            overlay.hide().map_err(|e| e.to_string())?;
         }
     }
 
+    // On deactivation the overlay hides itself only after its microphone
+    // tracks and AudioContext have been stopped. This preserves the invariant:
+    // if the listening indicator is gone, active capture is already gone.
     app.emit("reflexdesk://active", next).map_err(|e| e.to_string())?;
     Ok(Status { active: next, mode: "offline" })
 }
@@ -182,9 +184,42 @@ fn detect_harnesses() -> Vec<harness::HarnessStatus> {
     harness::detect_all()
 }
 
+#[tauri::command]
+fn stt_status(
+    app: tauri::AppHandle,
+    state: State<'_, stt::SttState>,
+) -> stt::SttStatus {
+    stt::status(&app, &state)
+}
+
+#[tauri::command]
+fn stt_start(
+    app: tauri::AppHandle,
+    state: State<'_, stt::SttState>,
+) -> Result<stt::SttStatus, String> {
+    stt::start(&app, &state)
+}
+
+#[tauri::command]
+fn stt_transcribe(
+    app: tauri::AppHandle,
+    state: State<'_, stt::SttState>,
+    samples: Vec<i16>,
+    sample_rate: u32,
+    language: String,
+) -> Result<stt::Transcript, String> {
+    stt::transcribe(&app, &state, samples, sample_rate, language)
+}
+
+#[tauri::command]
+fn stt_shutdown(state: State<'_, stt::SttState>) -> Result<(), String> {
+    stt::shutdown(&state)
+}
+
 pub fn run() {
     tauri::Builder::default()
         .manage(RuntimeState::default())
+        .manage(stt::SttState::default())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, _shortcut, event| {
@@ -215,7 +250,11 @@ pub fn run() {
             execute_tool,
             laya_route,
             planner_route,
-            detect_harnesses
+            detect_harnesses,
+            stt_status,
+            stt_start,
+            stt_transcribe,
+            stt_shutdown
         ])
         .run(tauri::generate_context!())
         .expect("error while running ReflexDesk");

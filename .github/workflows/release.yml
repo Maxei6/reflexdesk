@@ -34,6 +34,9 @@ jobs:
       - name: Generate platform icons
         run: npm run prepare:icons
 
+      - name: Prepare local STT runtime
+        run: npm run prepare:stt
+
       - uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

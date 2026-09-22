@@ -34,6 +34,9 @@ jobs:
       - name: Generate platform icons
         run: npm run prepare:icons
 
+      - name: Prepare local STT runtime
+        run: npm run prepare:stt
+
       - name: Build native installer
         uses: tauri-apps/tauri-action@v1
         with:

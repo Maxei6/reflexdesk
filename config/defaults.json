@@ -2,10 +2,13 @@
   "mode": "offline",
   "voice": {
     "enabled": true,
-    "stt_provider": "moonshine",
-    "language": "en",
+    "stt_provider": "nemotron",
+    "stt_model": "nvidia/nemotron-3.5-asr-streaming-0.6b",
+    "stt_runtime": "crispasr",
+    "language": "auto",
     "shortcut": "CommandOrControl+Shift+Space",
-    "push_to_talk": false
+    "push_to_talk": false,
+    "end_silence_ms": 340
   },
   "overlay": {
     "enabled": true,
