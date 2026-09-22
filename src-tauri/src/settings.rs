@@ -79,6 +79,12 @@ pub fn save(app: &AppHandle, settings: &AppSettings) -> Result<(), String> {
     let temp = path.with_extension("json.tmp");
     let payload = serde_json::to_vec_pretty(settings).map_err(|e| e.to_string())?;
     fs::write(&temp, payload).map_err(|e| e.to_string())?;
+
+    #[cfg(target_os = "windows")]
+    if path.exists() {
+        fs::remove_file(&path).map_err(|e| e.to_string())?;
+    }
+
     fs::rename(&temp, &path).map_err(|e| e.to_string())?;
     Ok(())
 }
