@@ -9,12 +9,12 @@ import {
 } from "@tauri-apps/api/window";
 import { MicTranscriber, ModelArch } from "@moonshine-ai/moonshine-wasm";
 import { ParticleOrb } from "./lib/particles.js";
+import { calculateOverlayPosition } from "./lib/geometry.js";
 
 const root = document.getElementById("overlayRoot");
 const partial = document.getElementById("partialText");
 const stateText = document.getElementById("stateText");
 const orb = new ParticleOrb(document.getElementById("orb"), { compact: true });
-orb.start();
 
 const SETTINGS_KEY = "reflexdesk.settings.v1";
 const TARGET_RATE = 16000;
@@ -55,6 +55,11 @@ async function setupOverlayWindow() {
   const win = getCurrentWindow();
   await win.setAlwaysOnTop(true);
   await win.setIgnoreCursorEvents(true);
+  try {
+    if (typeof win.setFocusable === "function") {
+      await win.setFocusable(false);
+    }
+  } catch {}
 }
 
 async function positionOverlay() {
@@ -65,29 +70,17 @@ async function positionOverlay() {
       monitor = await monitorFromPoint(cursor.x, cursor.y);
     } catch {}
 
-    if (!monitor) monitor = await primaryMonitor();
-    if (!monitor) return;
+    if (!monitor) {
+      try {
+        monitor = await primaryMonitor();
+      } catch {}
+    }
 
     const win = getCurrentWindow();
     const size = await win.outerSize();
-    const scale = Number(monitor.scaleFactor || 1);
-    const gap = Math.round(56 * scale);
+    const pos = calculateOverlayPosition(monitor, size);
 
-    const area = monitor.workArea || {
-      position: monitor.position,
-      size: monitor.size,
-    };
-
-    const x =
-      area.position.x
-      + Math.round((area.size.width - size.width) / 2);
-    const y =
-      area.position.y
-      + area.size.height
-      - size.height
-      - gap;
-
-    await win.setPosition(new PhysicalPosition(x, y));
+    await win.setPosition(new PhysicalPosition(pos.x, pos.y));
   } catch (error) {
     console.warn("Could not position Reflex overlay", error);
   }
@@ -481,7 +474,7 @@ async function applyActive(next) {
     try { await getCurrentWindow().show(); } catch {}
     stateText.textContent = "STARTING";
     setVisualState("listening");
-
+    orb.start();
     try {
       await setupAudio();
       await ensureStt();
@@ -492,6 +485,7 @@ async function applyActive(next) {
     return;
   }
 
+  orb.stop();
   clearReadyPoll();
   nemotronReady = false;
 

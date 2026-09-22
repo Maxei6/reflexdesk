@@ -4,11 +4,13 @@ html, body {
   height: 100%;
   background: transparent !important;
   overflow: hidden;
+  pointer-events: none !important;
 }
 
 body {
   font-family: Inter, ui-sans-serif, system-ui, sans-serif;
   user-select: none;
+  pointer-events: none !important;
 }
 
 .overlay-root {
@@ -20,6 +22,7 @@ body {
   opacity: 1;
   transition: opacity .14s ease;
   filter: drop-shadow(0 0 14px rgba(90, 180, 255, .12));
+  pointer-events: none !important;
 }
 
 .overlay-root.visual-disabled {
@@ -33,6 +36,7 @@ body {
   left: 50%;
   top: 10px;
   transform: translateX(-50%);
+  pointer-events: none !important;
 }
 
 .caption {
@@ -44,7 +48,7 @@ body {
   text-align: center;
   opacity: 0;
   transition: opacity .12s ease, transform .12s ease;
-  pointer-events: none;
+  pointer-events: none !important;
 }
 
 .overlay-root.show-caption .caption {
@@ -85,10 +89,46 @@ body {
   filter: drop-shadow(0 0 14px rgba(80, 235, 135, .18));
 }
 
+/* High contrast and forced colors support */
+@media (forced-colors: active) {
+  .overlay-root {
+    filter: none !important;
+  }
+  #stateText {
+    color: CanvasText !important;
+    forced-color-adjust: none;
+  }
+  #partialText {
+    background: Canvas !important;
+    color: CanvasText !important;
+    border: 2px solid CanvasText !important;
+    forced-color-adjust: none;
+  }
+}
+
+@media (prefers-contrast: more) {
+  .overlay-root {
+    filter: drop-shadow(0 0 10px rgba(0, 0, 0, 0.95));
+  }
+  #stateText {
+    color: #ffffff !important;
+    font-weight: 700;
+    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9);
+  }
+  #partialText {
+    background: rgba(0, 0, 0, 0.95) !important;
+    color: #ffffff !important;
+    border: 2px solid #ffffff !important;
+    font-weight: 600;
+    box-shadow: 0 0 0 1px #000000;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .overlay-root,
   .caption {
-    transition: none;
-    filter: none;
+    transition: none !important;
+    animation: none !important;
+    filter: none !important;
   }
 }

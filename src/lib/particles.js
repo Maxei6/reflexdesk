@@ -21,12 +21,33 @@ export class ParticleOrb {
     this.phase = 0;
     this.points = [];
     this.running = false;
+    this.rafId = null;
     this.state = "idle";
     this.color = [...COLORS.idle];
     this.targetColor = [...COLORS.idle];
+    this.reducedMotion = false;
+
+    if (typeof window !== "undefined" && window.matchMedia) {
+      const mediaQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
+      this.reducedMotion = Boolean(mediaQuery && mediaQuery.matches);
+      if (mediaQuery && typeof mediaQuery.addEventListener === "function") {
+        mediaQuery.addEventListener("change", (e) => {
+          this.reducedMotion = Boolean(e.matches);
+          if (this.reducedMotion) {
+            this.stopRaf();
+            this.drawStaticFrame();
+          } else if (this.running) {
+            this.start();
+          }
+        });
+      }
+    }
+
     this.resize = this.resize.bind(this);
     this.resize();
-    window.addEventListener("resize", this.resize);
+    if (typeof window !== "undefined") {
+      window.addEventListener("resize", this.resize);
+    }
     this.seed();
   }
 
@@ -36,6 +57,9 @@ export class ParticleOrb {
     this.canvas.width = Math.max(1, Math.round(rect.width * dpr));
     this.canvas.height = Math.max(1, Math.round(rect.height * dpr));
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    if (this.reducedMotion) {
+      this.drawStaticFrame();
+    }
   }
 
   seed() {
@@ -57,6 +81,10 @@ export class ParticleOrb {
 
   setLevel(level) {
     this.targetLevel = Math.max(0.02, Math.min(1, level));
+    if (this.reducedMotion) {
+      this.level = this.targetLevel;
+      this.drawStaticFrame();
+    }
   }
 
   setState(state) {
@@ -78,21 +106,47 @@ export class ParticleOrb {
     }[state];
 
     this.setLevel(Math.max(this.targetLevel, floor || 0.08));
+    if (this.reducedMotion) {
+      this.color = [...this.targetColor];
+      this.drawStaticFrame();
+    }
   }
 
   start() {
-    if (this.running) return;
     this.running = true;
+    if (this.reducedMotion) {
+      this.stopRaf();
+      this.drawStaticFrame();
+      return;
+    }
+    if (this.rafId !== null) return;
     const draw = (time) => {
-      if (!this.running) return;
+      if (!this.running || this.reducedMotion) {
+        this.stopRaf();
+        return;
+      }
       this.draw(time);
-      requestAnimationFrame(draw);
+      this.rafId = requestAnimationFrame(draw);
     };
-    requestAnimationFrame(draw);
+    this.rafId = requestAnimationFrame(draw);
+  }
+
+  stopRaf() {
+    if (this.rafId !== null) {
+      if (typeof cancelAnimationFrame === "function") {
+        cancelAnimationFrame(this.rafId);
+      }
+      this.rafId = null;
+    }
   }
 
   stop() {
     this.running = false;
+    this.stopRaf();
+  }
+
+  drawStaticFrame() {
+    this.draw(0);
   }
 
   draw(time) {
