@@ -179,6 +179,8 @@ pub fn start(app: &AppHandle, state: &SttState) -> Result<SttStatus, String> {
             "-m",
             "auto",
             "--auto-download",
+            "-l",
+            "auto",
             "-t",
             &thread_count,
         ])
