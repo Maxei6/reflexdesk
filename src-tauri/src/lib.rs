@@ -1,4 +1,5 @@
 mod harness;
+mod stt;
 mod tools;
 
 use serde::Serialize;
@@ -182,9 +183,42 @@ fn detect_harnesses() -> Vec<harness::HarnessStatus> {
     harness::detect_all()
 }
 
+#[tauri::command]
+fn stt_status(
+    app: tauri::AppHandle,
+    state: State<'_, stt::SttState>,
+) -> stt::SttStatus {
+    stt::status(&app, &state)
+}
+
+#[tauri::command]
+fn stt_start(
+    app: tauri::AppHandle,
+    state: State<'_, stt::SttState>,
+) -> Result<stt::SttStatus, String> {
+    stt::start(&app, &state)
+}
+
+#[tauri::command]
+fn stt_transcribe(
+    app: tauri::AppHandle,
+    state: State<'_, stt::SttState>,
+    samples: Vec<i16>,
+    sample_rate: u32,
+    language: String,
+) -> Result<stt::Transcript, String> {
+    stt::transcribe(&app, &state, samples, sample_rate, language)
+}
+
+#[tauri::command]
+fn stt_shutdown(state: State<'_, stt::SttState>) -> Result<(), String> {
+    stt::shutdown(&state)
+}
+
 pub fn run() {
     tauri::Builder::default()
         .manage(RuntimeState::default())
+        .manage(stt::SttState::default())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, _shortcut, event| {
@@ -215,7 +249,11 @@ pub fn run() {
             execute_tool,
             laya_route,
             planner_route,
-            detect_harnesses
+            detect_harnesses,
+            stt_status,
+            stt_start,
+            stt_transcribe,
+            stt_shutdown
         ])
         .run(tauri::generate_context!())
         .expect("error while running ReflexDesk");
