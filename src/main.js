@@ -650,6 +650,7 @@ async function dispatchText(text) {
   const cleanText = String(text || "").trim();
   if (!cleanText) return;
 
+  // Fast Tier-0 routing
   const route = routeFast(cleanText);
 
   if (route.kind === "control") {
@@ -666,14 +667,39 @@ async function dispatchText(text) {
     return;
   }
 
+  // Unified reflex layer: queries Deterministic, Supervised Laya, or Compact classifier
+  try {
+    const reflex = await invoke("reflex_route", { text: cleanText });
+    if (reflex && reflex.action && reflex.action !== "unknown" && reflex.confidence >= 0.70) {
+      if (reflex.action.startsWith("control.") || reflex.action.startsWith("voice.") || reflex.action.startsWith("reflex.")) {
+        if (reflex.action === "voice.stop") {
+          await invoke("set_listening", { active: false });
+        }
+        return;
+      }
+      const envelope = buildActionEnvelope(reflex.action, reflex.args || {}, "reflex");
+      const result = await requestActionWithConfirmation(envelope, cleanText);
+      handleActionResult(result);
+      return;
+    }
+  } catch {}
+
   if (settings && settings.stt_provider === "manual") return;
 
   if (settings && settings.laya_endpoint) {
     try {
-      await invoke("laya_route", {
+      const layaResult = await invoke("laya_route", {
         endpoint: settings.laya_endpoint,
         text: cleanText,
       });
+      const choice = (layaResult && (layaResult.choice || (layaResult.intent && layaResult.intent.choice))) || "";
+      const conf = (layaResult && (typeof layaResult.confidence === "number" ? layaResult.confidence : (layaResult.intent && layaResult.intent.confidence))) || 0;
+      if (choice && choice !== "unknown" && conf >= 0.70) {
+        const envelope = buildActionEnvelope(choice, {}, "reflex");
+        const result = await requestActionWithConfirmation(envelope, cleanText);
+        handleActionResult(result);
+        return;
+      }
     } catch {}
   }
 

@@ -1,0 +1,53 @@
+{"id": "en_app_01", "lang": "en", "text": "open Spotify", "expected": "app.open", "ambiguous": false}
+{"id": "en_app_02", "lang": "en", "text": "launch Chrome", "expected": "app.open", "ambiguous": false}
+{"id": "en_app_03", "lang": "en", "text": "start VS Code", "expected": "app.open", "ambiguous": false}
+{"id": "en_app_04", "lang": "en", "text": "open terminal", "expected": "app.open", "ambiguous": false}
+{"id": "en_app_05", "lang": "en", "text": "open notepad", "expected": "app.open", "ambiguous": false}
+{"id": "en_browser_01", "lang": "en", "text": "open https://github.com", "expected": "browser.open", "ambiguous": false}
+{"id": "en_browser_02", "lang": "en", "text": "go to https://reflexdesk.io", "expected": "browser.open", "ambiguous": false}
+{"id": "en_search_01", "lang": "en", "text": "search for rust programming language", "expected": "browser.search", "ambiguous": false}
+{"id": "en_search_02", "lang": "en", "text": "google latest tech news", "expected": "browser.search", "ambiguous": false}
+{"id": "en_search_03", "lang": "en", "text": "search the web for local weather forecast", "expected": "browser.search", "ambiguous": false}
+{"id": "en_harness_01", "lang": "en", "text": "ask codex to fix the unit tests", "expected": "harness.start", "ambiguous": false}
+{"id": "en_harness_02", "lang": "en", "text": "tell opencode to implement authentication", "expected": "harness.start", "ambiguous": false}
+{"id": "en_harness_03", "lang": "en", "text": "run claude to review this git diff", "expected": "harness.start", "ambiguous": false}
+{"id": "en_control_01", "lang": "en", "text": "hello reflexdesk", "expected": "control", "ambiguous": false}
+{"id": "en_control_02", "lang": "en", "text": "stop listening", "expected": "control", "ambiguous": false}
+{"id": "en_control_03", "lang": "en", "text": "go to sleep", "expected": "control", "ambiguous": false}
+{"id": "en_ambig_01", "lang": "en", "text": "look up how to configure tauri windows", "expected": "browser.search", "ambiguous": true}
+{"id": "en_ambig_02", "lang": "en", "text": "find documentation for python multiprocessing", "expected": "browser.search", "ambiguous": true}
+{"id": "en_ambig_03", "lang": "en", "text": "start coding on the auth service", "expected": "harness.start", "ambiguous": true}
+{"id": "en_ambig_04", "lang": "en", "text": "code a script to parse csv files", "expected": "harness.start", "ambiguous": true}
+{"id": "en_ambig_05", "lang": "en", "text": "refactor the legacy database queries", "expected": "harness.start", "ambiguous": true}
+{"id": "en_ambig_06", "lang": "en", "text": "launch calculator app", "expected": "app.open", "ambiguous": true}
+{"id": "en_ambig_07", "lang": "en", "text": "play some focus music", "expected": "app.open", "ambiguous": true}
+{"id": "en_unknown_01", "lang": "en", "text": "flurble gribbitz 42", "expected": "unknown", "ambiguous": false}
+{"id": "en_unknown_02", "lang": "en", "text": "format all system hard drives", "expected": "unknown", "ambiguous": false}
+{"id": "it_app_01", "lang": "it", "text": "apri Spotify", "expected": "app.open", "ambiguous": false}
+{"id": "it_app_02", "lang": "it", "text": "lancia Chrome", "expected": "app.open", "ambiguous": false}
+{"id": "it_app_03", "lang": "it", "text": "avvia terminale", "expected": "app.open", "ambiguous": false}
+{"id": "it_browser_01", "lang": "it", "text": "vai su https://ansa.it", "expected": "browser.open", "ambiguous": false}
+{"id": "it_search_01", "lang": "it", "text": "cerca su google ristoranti a Roma", "expected": "browser.search", "ambiguous": false}
+{"id": "it_search_02", "lang": "it", "text": "cerca previsioni meteo Milano", "expected": "browser.search", "ambiguous": false}
+{"id": "it_ambig_01", "lang": "it", "text": "trova guida per installare docker", "expected": "browser.search", "ambiguous": true}
+{"id": "it_ambig_02", "lang": "it", "text": "inizia a programmare la nuova funzione", "expected": "harness.start", "ambiguous": true}
+{"id": "es_app_01", "lang": "es", "text": "abrir Spotify", "expected": "app.open", "ambiguous": false}
+{"id": "es_app_02", "lang": "es", "text": "iniciar Chrome", "expected": "app.open", "ambiguous": false}
+{"id": "es_search_01", "lang": "es", "text": "buscar en google noticias de tecnologia", "expected": "browser.search", "ambiguous": false}
+{"id": "es_search_02", "lang": "es", "text": "buscar recetas de cocina faciles", "expected": "browser.search", "ambiguous": false}
+{"id": "es_browser_01", "lang": "es", "text": "ir a https://elpais.com", "expected": "browser.open", "ambiguous": false}
+{"id": "es_ambig_01", "lang": "es", "text": "encuentra documentacion sobre rust", "expected": "browser.search", "ambiguous": true}
+{"id": "es_ambig_02", "lang": "es", "text": "empezar a programar el servicio web", "expected": "harness.start", "ambiguous": true}
+{"id": "fr_app_01", "lang": "fr", "text": "ouvrir Spotify", "expected": "app.open", "ambiguous": false}
+{"id": "fr_app_02", "lang": "fr", "text": "lancer Chrome", "expected": "app.open", "ambiguous": false}
+{"id": "fr_search_01", "lang": "fr", "text": "chercher sur google les horaires de train", "expected": "browser.search", "ambiguous": false}
+{"id": "fr_search_02", "lang": "fr", "text": "rechercher meteo a Paris", "expected": "browser.search", "ambiguous": false}
+{"id": "fr_browser_01", "lang": "fr", "text": "aller sur https://lemonde.fr", "expected": "browser.open", "ambiguous": false}
+{"id": "fr_ambig_01", "lang": "fr", "text": "trouver un tutoriel sur tauri", "expected": "browser.search", "ambiguous": true}
+{"id": "fr_ambig_02", "lang": "fr", "text": "commencer a coder le module", "expected": "harness.start", "ambiguous": true}
+{"id": "de_app_01", "lang": "de", "text": "öffne Spotify", "expected": "app.open", "ambiguous": false}
+{"id": "de_app_02", "lang": "de", "text": "starte Chrome", "expected": "app.open", "ambiguous": false}
+{"id": "de_search_01", "lang": "de", "text": "suche nach Rust Anleitungen", "expected": "browser.search", "ambiguous": false}
+{"id": "de_browser_01", "lang": "de", "text": "gehe zu https://spiegel.de", "expected": "browser.open", "ambiguous": false}
+{"id": "de_ambig_01", "lang": "de", "text": "finde Dokumentation über Linux", "expected": "browser.search", "ambiguous": true}
+{"id": "de_ambig_02", "lang": "de", "text": "programmiere ein neues Feature", "expected": "harness.start", "ambiguous": true}

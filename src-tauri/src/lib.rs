@@ -1,4 +1,7 @@
 mod harness;
+pub mod desktop;
+pub mod reflex;
+pub mod planner;
 mod lifecycle;
 mod model_manager;
 mod policy;
@@ -584,6 +587,11 @@ fn cancel_session(session_id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn get_desktop_health() -> desktop::DesktopHealth {
+    desktop::desktop_health()
+}
+
+#[tauri::command]
 fn laya_route(
     app: AppHandle,
     runtime: State<'_, RuntimeState>,
@@ -599,12 +607,27 @@ fn laya_route(
     let _ = app.emit("reflexdesk://visual-state", "thinking");
 
     let url = format!("{}/route", endpoint.trim_end_matches('/'));
-    let result = reqwest::blocking::Client::new()
-        .post(url)
+    let mut client_builder = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_millis(500));
+    let client = client_builder.build().map_err(|e| e.to_string())?;
+
+    let mut req = client
+        .post(&url)
         .json(&serde_json::json!({
             "text": text,
             "context": { "source": "reflexdesk" }
-        }))
+        }));
+
+    // Inject ephemeral bearer token if supervised Laya endpoint matches
+    if let Some(engine) = app.try_state::<reflex::ReflexEngine>() {
+        if let Some(ep) = engine.supervisor().endpoint_snapshot() {
+            if endpoint.contains(&format!(":{}", ep.port)) {
+                req = req.header("Authorization", format!("Bearer {}", ep.token));
+            }
+        }
+    }
+
+    let result = req
         .send()
         .map_err(|e| e.to_string())
         .and_then(|response| {
@@ -622,6 +645,46 @@ fn laya_route(
 }
 
 #[tauri::command]
+fn reflex_route(
+    app: AppHandle,
+    _runtime: State<'_, RuntimeState>,
+    text: String,
+    session_id: Option<String>,
+) -> Result<reflex::ReflexDecision, String> {
+    let settings = app.state::<SettingsState>().snapshot();
+    let session = session_id.unwrap_or_else(|| "reflex_session".into());
+    let ctx = reflex::ReflexContext::new(&text, &session, None, Some(&settings.language));
+    if let Some(engine) = app.try_state::<reflex::ReflexEngine>() {
+        Ok(engine.route_command(&ctx, &settings.stt_provider))
+    } else {
+        let engine = reflex::ReflexEngine::new();
+        Ok(engine.route_command(&ctx, "deterministic"))
+    }
+}
+
+#[tauri::command]
+fn get_reflex_health(app: AppHandle) -> serde_json::Value {
+    if let Some(engine) = app.try_state::<reflex::ReflexEngine>() {
+        let laya_health = engine.supervisor().health();
+        let laya_running = engine.supervisor().child_running();
+        serde_json::json!({
+            "deterministic_health": true,
+            "compact_health": true,
+            "laya_health": laya_health,
+            "laya_running": laya_running,
+            "ready": true,
+        })
+    } else {
+        serde_json::json!({
+            "deterministic_health": true,
+            "compact_health": true,
+            "laya_health": false,
+            "laya_running": false,
+            "ready": true,
+        })
+    }
+
+#[tauri::command]
 fn planner_route(
     app: AppHandle,
     runtime: State<'_, RuntimeState>,
@@ -630,81 +693,33 @@ fn planner_route(
     text: String,
     allow_remote: bool,
 ) -> Result<serde_json::Value, String> {
-    // Remote endpoints require persisted user consent; a caller flag can
-    // never enable remote AI on its own. Loopback always passes.
     let persisted_allow_online = app.state::<SettingsState>().snapshot().allow_online_ai;
-    security::check_remote_allowed(persisted_allow_online, allow_remote)?;
-    security::check_endpoint_allowed(&endpoint, persisted_allow_online)?;
     let was_listening = runtime.snapshot().listening;
     let _ = update_runtime(&app, Phase::Routing, None);
     let _ = app.emit("reflexdesk://visual-state", "thinking");
 
-    let client = reqwest::blocking::Client::new();
-    let mut resolved_model = model;
-
-    if resolved_model.trim().is_empty() || resolved_model == "auto" {
-        let models_url = if endpoint.ends_with("/chat/completions") {
-            format!("{}/models", endpoint.trim_end_matches("/chat/completions"))
-        } else {
-            format!("{}/models", endpoint.trim_end_matches('/'))
-        };
-
-        let mut request = client.get(models_url);
-        if let Ok(key) = std::env::var("REFLEXDESK_PLANNER_API_KEY") {
-            if !key.trim().is_empty() {
-                request = request.bearer_auth(key);
-            }
-        }
-
-        let models = request
-            .send()
-            .map_err(|e| format!("could not discover models: {e}"))?
-            .json::<serde_json::Value>()
-            .map_err(|e| format!("invalid /models response: {e}"))?;
-
-        resolved_model = models
-            .pointer("/data/0/id")
-            .and_then(|value| value.as_str())
-            .ok_or("no model found; start an OpenAI-compatible model server or choose a model")?
-            .to_string();
-    }
-
-    let instruction = "Return ONLY compact JSON with keys action,args. Allowed actions: app.open, browser.open, browser.search, harness.start, unknown. Never invent tools. app.open args={app:string}; browser.open args={url:http/https}; browser.search args={query:string}; harness.start args={harness:string,prompt:string,cwd?:string}. If unsure return {\"action\":\"unknown\",\"args\":{}}.";
-
-    let body = serde_json::json!({
-        "model": resolved_model,
-        "stream": false,
-        "temperature": 0,
-        "messages": [
-            { "role": "system", "content": instruction },
-            { "role": "user", "content": text }
-        ]
-    });
-
-    let mut request = client.post(endpoint).json(&body);
-    if let Ok(key) = std::env::var("REFLEXDESK_PLANNER_API_KEY") {
-        if !key.trim().is_empty() {
-            request = request.bearer_auth(key);
-        }
-    }
+    let planner_adapter = planner::OpenAiCompatibleLocalPlanner::new(
+        endpoint,
+        model,
+        persisted_allow_online,
+    );
+    let req = planner::PlannerRequest::new("planner-route-session", text, allow_remote);
+    let ctx = planner::PlannerContext::default();
 
     let result = (|| -> Result<serde_json::Value, String> {
-        let response = request.send().map_err(|e| e.to_string())?;
-        if !response.status().is_success() {
-            return Err(format!("planner returned HTTP {}", response.status()));
+        use planner::LocalPlanner;
+        let envelopes = planner_adapter.plan(&ctx, &req)?;
+        if let Some(env) = envelopes.first() {
+            Ok(serde_json::json!({
+                "action": env.tool,
+                "args": env.args,
+            }))
+        } else {
+            Ok(serde_json::json!({
+                "action": "unknown",
+                "args": {},
+            }))
         }
-
-        let value = response
-            .json::<serde_json::Value>()
-            .map_err(|e| e.to_string())?;
-
-        let content = value
-            .pointer("/choices/0/message/content")
-            .and_then(|value| value.as_str())
-            .ok_or("planner returned no content")?;
-
-        serde_json::from_str(content.trim())
-            .map_err(|e| format!("invalid planner JSON: {e}"))
     })();
 
     let _ = update_runtime(
@@ -713,6 +728,20 @@ fn planner_route(
         None,
     );
     result
+}
+
+#[tauri::command]
+fn planner_health(app: AppHandle) -> bool {
+    let settings = app.state::<SettingsState>().snapshot();
+    let service = planner::PlannerService::new(&settings);
+    service.health()
+}
+
+#[tauri::command]
+fn planner_status(app: AppHandle) -> planner::PlannerStatus {
+    let settings = app.state::<SettingsState>().snapshot();
+    let service = planner::PlannerService::new(&settings);
+    service.status(&settings)
 }
 
 #[tauri::command]
@@ -801,6 +830,7 @@ pub fn run() {
         .manage(stt::SttState::default())
         .manage(ProcessSupervisor::default())
         .manage(transcript::TranscriptGate::default())
+        .manage(reflex::ReflexEngine::new())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, _shortcut, event| {
@@ -892,8 +922,13 @@ pub fn run() {
             request_action,
             confirm_action,
             cancel_session,
+            get_desktop_health,
             laya_route,
+            reflex_route,
+            get_reflex_health,
             planner_route,
+            planner_health,
+            planner_status,
             detect_harnesses,
             stt_status,
             stt_transcribe,
