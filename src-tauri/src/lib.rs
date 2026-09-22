@@ -21,14 +21,15 @@ struct Status {
 fn apply_listening(app: &tauri::AppHandle, state: &RuntimeState, next: bool) -> Result<Status, String> {
     *state.active.lock().map_err(|_| "state lock poisoned")? = next;
 
-    if let Some(overlay) = app.get_webview_window("overlay") {
-        if next {
+    if next {
+        if let Some(overlay) = app.get_webview_window("overlay") {
             overlay.show().map_err(|e| e.to_string())?;
-        } else {
-            overlay.hide().map_err(|e| e.to_string())?;
         }
     }
 
+    // On deactivation the overlay hides itself only after its microphone
+    // tracks and AudioContext have been stopped. This preserves the invariant:
+    // if the listening indicator is gone, active capture is already gone.
     app.emit("reflexdesk://active", next).map_err(|e| e.to_string())?;
     Ok(Status { active: next, mode: "offline" })
 }
