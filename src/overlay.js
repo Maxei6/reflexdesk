@@ -411,6 +411,7 @@ async function applyActive(next) {
 
   if (active) {
     await positionOverlay();
+    try { await getCurrentWindow().show(); } catch {}
     stateText.textContent = "STARTING";
     setVisualState("listening");
 
