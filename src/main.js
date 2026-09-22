@@ -97,6 +97,41 @@ function renderSettings() {
   $("benchmarkInfo").textContent = settings.voice_benchmark_ms
     ? settings.voice_benchmark_ms + " ms last local STT"
     : "Not measured";
+  renderProviderStatus();
+}
+
+function renderProviderStatus() {
+  const hasSecret = Boolean(settings && settings.planner_secret_ref && settings.planner_secret_ref.id);
+  const badge = $("providerStatusBadge");
+  const testBtn = $("testProvider");
+  const disconnectBtn = $("disconnectProvider");
+  const msg = $("providerStatusMessage");
+
+  if (!badge) return;
+
+  if (hasSecret) {
+    badge.textContent = "● CONNECTED";
+    badge.style.color = "#7de29f";
+    badge.style.borderColor = "#21412c";
+    badge.style.background = "#0d1811";
+    if (testBtn) testBtn.disabled = false;
+    if (disconnectBtn) disconnectBtn.disabled = false;
+    if (msg && !msg.textContent) {
+      msg.textContent = "Connected (credential ID: " + settings.planner_secret_ref.id + ")";
+      msg.className = "provider-status-msg";
+    }
+  } else {
+    badge.textContent = "DISCONNECTED";
+    badge.style.color = "#888";
+    badge.style.borderColor = "#333";
+    badge.style.background = "#141414";
+    if (testBtn) testBtn.disabled = true;
+    if (disconnectBtn) disconnectBtn.disabled = true;
+    if (msg) {
+      msg.textContent = "";
+      msg.className = "provider-status-msg";
+    }
+  }
 }
 
 function statusPresentation(state) {
@@ -403,12 +438,13 @@ async function refreshDiagnostics() {
       invoke("stt_status"),
       invoke("get_model_cache_size").catch(() => 0),
       invoke("get_model_status", { modelId: "nemotron-3.5-asr-streaming-0.6b" }).catch(() => null),
+      invoke("get_benchmark_report").catch(() => null),
     ]);
     const profile = values[0];
     const speech = values[1];
     const cacheBytes = Number(values[2] || 0);
     const modelStatus = values[3];
-
+    const benchmarkReport = values[4];
     $("systemInfo").textContent =
       profile.os + " · " + profile.arch + " · " + profile.logical_cpus
       + " threads · " + profile.acceleration_hint;
@@ -428,6 +464,17 @@ async function refreshDiagnostics() {
       $("modelBackendInfo").textContent = modelStatus.verified
         ? "Nemotron 3.5 Q4_K (Verified Active)"
         : "Nemotron 3.5 (" + modelStatus.state + ")";
+    }
+    if ($("benchmarkInfo")) {
+      if (benchmarkReport && benchmarkReport.selected_candidate_id) {
+        const top = benchmarkReport.candidates && benchmarkReport.candidates[0];
+        const rtfStr = top && top.rtf && top.rtf < 900 ? ` (${top.rtf.toFixed(2)}x RTF)` : "";
+        $("benchmarkInfo").textContent = `${benchmarkReport.selected_candidate_id}${rtfStr}`;
+      } else if (settings.voice_benchmark_ms) {
+        $("benchmarkInfo").textContent = settings.voice_benchmark_ms + " ms last local STT";
+      } else {
+        $("benchmarkInfo").textContent = "Not measured";
+      }
     }
   } catch {
     $("systemInfo").textContent = "Diagnostics unavailable";
@@ -775,6 +822,68 @@ if ($("repairModel")) {
     }
   });
 }
+if ($("runBenchmark")) {
+  $("runBenchmark").addEventListener("click", async function () {
+    try {
+      $("runBenchmark").disabled = true;
+      $("runBenchmark").textContent = "Benchmarking…";
+      await invoke("run_hardware_benchmark", { timeoutSecs: 30 });
+      await refreshDiagnostics();
+    } catch (err) {
+      $("attentionBanner").classList.remove("hidden");
+      $("attentionText").textContent = "Benchmark failed: " + String(err).slice(0, 200);
+    } finally {
+      $("runBenchmark").disabled = false;
+      $("runBenchmark").textContent = "Run benchmark";
+    }
+  });
+}
+if ($("previewDiagnostics")) {
+  $("previewDiagnostics").addEventListener("click", async function () {
+    try {
+      $("previewDiagnostics").disabled = true;
+      $("previewDiagnostics").textContent = "Loading…";
+      const bundle = await invoke("get_diagnostics_preview");
+      if ($("diagnosticsPreviewText") && $("diagnosticsPreviewContainer")) {
+        $("diagnosticsPreviewText").textContent = JSON.stringify(bundle, null, 2);
+        $("diagnosticsPreviewContainer").classList.remove("hidden");
+      }
+    } catch (err) {
+      if ($("diagnosticsStatus")) {
+        $("diagnosticsStatus").textContent = "Preview error: " + String(err).slice(0, 100);
+      }
+    } finally {
+      $("previewDiagnostics").disabled = false;
+      $("previewDiagnostics").textContent = "Preview";
+    }
+  });
+}
+if ($("closeDiagnosticsPreview")) {
+  $("closeDiagnosticsPreview").addEventListener("click", function () {
+    if ($("diagnosticsPreviewContainer")) {
+      $("diagnosticsPreviewContainer").classList.add("hidden");
+    }
+  });
+}
+if ($("exportDiagnostics")) {
+  $("exportDiagnostics").addEventListener("click", async function () {
+    try {
+      $("exportDiagnostics").disabled = true;
+      $("exportDiagnostics").textContent = "Exporting…";
+      const bundle = await invoke("export_diagnostics", { path: null });
+      if ($("diagnosticsStatus")) {
+        $("diagnosticsStatus").textContent = "Diagnostics exported successfully (" + bundle.recent_logs.length + " logs).";
+      }
+    } catch (err) {
+      if ($("diagnosticsStatus")) {
+        $("diagnosticsStatus").textContent = "Export error: " + String(err).slice(0, 100);
+      }
+    } finally {
+      $("exportDiagnostics").disabled = false;
+      $("exportDiagnostics").textContent = "Export";
+    }
+  });
+}
 
 listen("reflexdesk://model-progress", function (event) {
   const payload = event.payload;
@@ -831,6 +940,103 @@ listen("reflexdesk://transcript-verified", async function (event) {
     dashboardOrb.setState("error");
   }
 });
+
+if ($("connectProvider")) {
+  $("connectProvider").addEventListener("click", async function () {
+    const keyInput = $("providerApiKey");
+    const key = keyInput ? keyInput.value.trim() : "";
+    const msg = $("providerStatusMessage");
+    if (!key) {
+      if (msg) {
+        msg.textContent = "Please enter an API key.";
+        msg.className = "provider-status-msg error";
+      }
+      return;
+    }
+
+    try {
+      $("connectProvider").disabled = true;
+      $("connectProvider").textContent = "Connecting…";
+      const status = await invoke("connect_provider", {
+        provider: "planner",
+        apiKey: key,
+      });
+
+      // Immediately zeroize / clear DOM input
+      keyInput.value = "";
+
+      settings = await invoke("get_app_settings");
+      renderSettings();
+
+      if (msg) {
+        msg.textContent = status.message || "Connected successfully.";
+        msg.className = status.last_status === "auth-invalid"
+          ? "provider-status-msg error"
+          : "provider-status-msg success";
+      }
+    } catch (err) {
+      if (msg) {
+        msg.textContent = "Connection failed: " + String(err).slice(0, 150);
+        msg.className = "provider-status-msg error";
+      }
+    } finally {
+      $("connectProvider").disabled = false;
+      $("connectProvider").textContent = "Connect";
+    }
+  });
+}
+
+if ($("testProvider")) {
+  $("testProvider").addEventListener("click", async function () {
+    const msg = $("providerStatusMessage");
+    try {
+      $("testProvider").disabled = true;
+      $("testProvider").textContent = "Testing…";
+      const status = await invoke("test_provider", { provider: "planner" });
+      if (msg) {
+        msg.textContent = status.message;
+        msg.className = status.last_status === "auth-invalid"
+          ? "provider-status-msg error"
+          : "provider-status-msg success";
+      }
+      if (status.last_status === "auth-invalid") {
+        $("attentionBanner").classList.remove("hidden");
+        $("attentionText").textContent = "Provider rejected API key (401/403). Please rotate your key.";
+      }
+    } catch (err) {
+      if (msg) {
+        msg.textContent = "Test error: " + String(err).slice(0, 150);
+        msg.className = "provider-status-msg error";
+      }
+    } finally {
+      $("testProvider").disabled = false;
+      $("testProvider").textContent = "Test";
+    }
+  });
+}
+
+if ($("disconnectProvider")) {
+  $("disconnectProvider").addEventListener("click", async function () {
+    const msg = $("providerStatusMessage");
+    try {
+      $("disconnectProvider").disabled = true;
+      await invoke("disconnect_provider", { provider: "planner" });
+      settings = await invoke("get_app_settings");
+      renderSettings();
+      if (msg) {
+        msg.textContent = "Provider disconnected.";
+        msg.className = "provider-status-msg";
+      }
+    } catch (err) {
+      if (msg) {
+        msg.textContent = "Disconnect error: " + String(err).slice(0, 150);
+        msg.className = "provider-status-msg error";
+      }
+    } finally {
+      $("disconnectProvider").disabled = false;
+    }
+  });
+}
 
 bootstrap().catch(function (error) {
   document.body.innerHTML =

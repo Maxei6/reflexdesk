@@ -166,6 +166,33 @@
           </div>
         </section>
 
+        <section class="settings-card" id="providerCard">
+          <div class="section-title">
+            <div>
+              <h2>Online Provider</h2>
+              <p>Credentials stored securely in OS vault — never in settings or logs.</p>
+            </div>
+            <span id="providerStatusBadge" class="local-badge">Disconnected</span>
+          </div>
+
+          <div class="setting-line" id="providerKeyLine">
+            <div>
+              <strong>Provider API key</strong>
+              <span id="providerKeyHelp">Enter key to connect or rotate credentials.</span>
+            </div>
+            <div class="provider-key-controls">
+              <input id="providerApiKey" type="password" class="control" placeholder="sk-…" autocomplete="off" />
+            </div>
+          </div>
+
+          <div class="provider-actions">
+            <button id="connectProvider" class="secondary-button">Connect</button>
+            <button id="testProvider" class="text-button" disabled>Test</button>
+            <button id="disconnectProvider" class="danger-ghost" disabled>Disconnect</button>
+          </div>
+          <p id="providerStatusMessage" class="provider-status-msg"></p>
+        </section>
+
         <section class="settings-card">
           <div class="section-title">
             <div>
@@ -211,11 +238,26 @@
               <div><span>Engine</span><b id="engineInfo">Checking…</b></div>
               <div><span>Model backend</span><b id="modelBackendInfo">Nemotron 3.5 Q4_K (local GGUF)</b></div>
               <div><span>Model cache</span><b id="modelCacheInfo">Calculating…</b></div>
+              <div>
+                <span>Diagnostics bundle</span>
+                <div class="diagnostics-btn-group">
+                  <button id="previewDiagnostics" class="secondary-button compact-btn" type="button">Preview</button>
+                  <button id="exportDiagnostics" class="secondary-button compact-btn" type="button">Export</button>
+                </div>
+              </div>
             </div>
 
+            <div id="diagnosticsPreviewContainer" class="diagnostics-preview-box hidden">
+              <div class="diagnostics-preview-header">
+                <span>Sanitized diagnostics preview</span>
+                <button id="closeDiagnosticsPreview" class="text-button" type="button">Close</button>
+              </div>
+              <pre id="diagnosticsPreviewText"></pre>
+            </div>
+            <div id="diagnosticsStatus" class="diagnostics-status-msg"></div>
             <div class="advanced-actions">
+              <button id="runBenchmark" class="secondary-button">Run benchmark</button>
               <button id="repairModel" class="secondary-button">Repair model</button>
-              <button id="resetSetup" class="danger-ghost">Run setup again</button>
             </div>
           </div>
         </details>

@@ -26,6 +26,15 @@
     "allow-quit-app",
     "allow-desktop-health",
     "allow-browser-status",
-    "allow-browser-pairing-secret"
+    "allow-browser-pairing-secret",
+    "allow-hardware-profile",
+    "allow-hardware-benchmark",
+    "allow-diagnostics-preview",
+    "allow-diagnostics-export",
+    "allow-connect-provider",
+    "allow-test-provider",
+    "allow-disconnect-provider",
+    "allow-get-provider-status",
+    "allow-list-secret-metadata"
   ]
 }
