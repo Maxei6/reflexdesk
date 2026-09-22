@@ -145,7 +145,7 @@ The v0.1 bridge detects:
 
 **OpenCode · Kilo · Codex · Claude Code · Gemini**
 
-Structured ACP/SDK control is the target. UI scraping is intentionally the last resort.
+Structured ACP/SDK control and harness interrupt/resume are the target. UI scraping is intentionally the last resort.
 
 ---
 
