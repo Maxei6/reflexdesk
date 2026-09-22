@@ -18,6 +18,10 @@ const required = [
   "src/main.js",
   "src/overlay.js",
   "src-tauri/src/lib.rs",
+  "src-tauri/src/stt.rs",
+  "scripts/prepare-stt-runtime.mjs",
+  "docs/STT.md",
+  "assets/reflexdesk-hero.png",
   "README.md",
   "assets/reflexdesk-icon.svg",
 ];
