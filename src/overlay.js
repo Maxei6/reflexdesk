@@ -329,6 +329,7 @@ async function applyActive(next) {
     partial.textContent = "";
     stateText.textContent = "PAUSED";
     orb.setLevel(0.04);
+    try { await getCurrentWindow().hide(); } catch {}
   }
 }
 
