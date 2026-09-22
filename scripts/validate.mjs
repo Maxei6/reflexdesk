@@ -11,6 +11,9 @@ const jsonFiles = [
   "models/registry.json",
   "tests/matrix.json",
   "schemas/skill.schema.json",
+  "tests/soak/thresholds.json",
+  "tests/soak/matrix.json",
+  "tests/soak/blockers.json",
 ];
 
 for (const path of jsonFiles) JSON.parse(await readFile(path, "utf8"));
@@ -47,6 +50,12 @@ const required = [
   "assets/reflexdesk-hero.png",
   "README.md",
   "assets/reflexdesk-icon.svg",
+  "tests/soak/thresholds.json",
+  "tests/soak/matrix.json",
+  "tests/soak/blockers.json",
+  "scripts/soak-collect.mjs",
+  "scripts/soak-entry-check.mjs",
+  ".github/workflows/soak.yml",
 ];
 for (const path of required) accessSync(path);
 

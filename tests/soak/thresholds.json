@@ -1,0 +1,73 @@
+{
+  "version": 1,
+  "status": "frozen",
+  "frozen_at": "2026-09-22T00:00:00Z",
+  "rationale": "Release candidate gates are frozen prior to soak execution. Thresholds cannot be relaxed post-test without formal exception documentation.",
+  "rules": [
+    "Thresholds are immutable during soak execution.",
+    "Unmeasured metrics must strictly remain null/None and never be asserted as product claims.",
+    "Any modification of gates requires architectural sign-off and documented justification."
+  ],
+  "thresholds": {
+    "crash_free_sessions_pct": {
+      "target": 99.9,
+      "unit": "percent",
+      "direction": "min",
+      "description": "Percentage of user sessions completing without unhandled crash, kernel panic, or abnormal exit."
+    },
+    "crash_free_runtime_hours": {
+      "target": 72.0,
+      "unit": "hours",
+      "direction": "min",
+      "description": "Continuous background runtime without process termination or crash."
+    },
+    "task_completion_rate": {
+      "target": 0.98,
+      "unit": "ratio",
+      "direction": "min",
+      "description": "Proportion of valid, non-negated user requests that successfully execute and verify."
+    },
+    "false_action_rate": {
+      "target": 0.01,
+      "unit": "ratio",
+      "direction": "max",
+      "description": "Rate of unintended, negated, or misrouted tool actions executed."
+    },
+    "cancel_latency_p95_ms": {
+      "target": 200,
+      "unit": "milliseconds",
+      "direction": "max",
+      "description": "95th percentile latency from cancel signal emission to full execution interruption."
+    },
+    "startup_readiness_p95_ms": {
+      "target": 3000,
+      "unit": "milliseconds",
+      "direction": "max",
+      "description": "95th percentile time from cold process start to fully ready STT and listening pipeline."
+    },
+    "max_memory_growth_mb_per_24h": {
+      "target": 50.0,
+      "unit": "megabytes",
+      "direction": "max",
+      "description": "Maximum allowable steady-state resident memory growth per 24 hours of background operation (leak prevention)."
+    },
+    "orphan_process_count": {
+      "target": 0,
+      "unit": "count",
+      "direction": "max",
+      "description": "Number of orphaned child, grandchild, STT, or harness processes remaining after quit or crash (strict 0 tolerated)."
+    },
+    "update_success_rate": {
+      "target": 0.99,
+      "unit": "ratio",
+      "direction": "min",
+      "description": "Proportion of updater transaction applications that successfully verify and complete."
+    },
+    "update_rollback_rate": {
+      "target": 0.00,
+      "unit": "ratio",
+      "direction": "max",
+      "description": "Acceptable rate of bricked installations; failed updates must cleanly roll back with 0 state corruption."
+    }
+  }
+}

@@ -1,0 +1,91 @@
+{
+  "simulated_at": "2026-09-22T14:24:03.225Z",
+  "fault_injection": {
+    "total_hooks": 13,
+    "passed_hooks": 13,
+    "all_passed": true,
+    "details": [
+      {
+        "id": "FI-01",
+        "name": "Model download interrupt",
+        "pass": true
+      },
+      {
+        "id": "FI-02",
+        "name": "Disk full preflight fail closed",
+        "pass": true
+      },
+      {
+        "id": "FI-03",
+        "name": "Mic disconnect attention state",
+        "pass": true
+      },
+      {
+        "id": "FI-04",
+        "name": "STT crash harvested",
+        "pass": true
+      },
+      {
+        "id": "FI-05",
+        "name": "Planner timeout fallback",
+        "pass": true
+      },
+      {
+        "id": "FI-06",
+        "name": "Port conflict alternative",
+        "pass": true
+      },
+      {
+        "id": "FI-07",
+        "name": "Duplicate instance prevented",
+        "pass": true
+      },
+      {
+        "id": "FI-08",
+        "name": "Hotkey conflict graceful UI",
+        "pass": true
+      },
+      {
+        "id": "FI-09",
+        "name": "Stale element re-inspection",
+        "pass": true
+      },
+      {
+        "id": "FI-10",
+        "name": "SPA mutation cancel",
+        "pass": true
+      },
+      {
+        "id": "FI-11",
+        "name": "Agent crash harvest",
+        "pass": true
+      },
+      {
+        "id": "FI-12",
+        "name": "Quit during action cancel",
+        "pass": true
+      },
+      {
+        "id": "FI-13",
+        "name": "Corrupt config fallback",
+        "pass": true
+      }
+    ]
+  },
+  "metrics": {
+    "total_events_processed": 165,
+    "total_sessions": 1,
+    "crashed_sessions": 0,
+    "crash_free_sessions_pct": 100,
+    "total_tasks": 100,
+    "successful_tasks": 100,
+    "task_completion_rate": 1,
+    "false_actions": 0,
+    "false_action_rate": 0,
+    "cancel_measurements_count": 51,
+    "p50_cancel_latency_ms": 67,
+    "p95_cancel_latency_ms": 107,
+    "orphan_process_count": 0
+  },
+  "events_count": 165
+}

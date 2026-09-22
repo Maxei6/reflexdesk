@@ -1,0 +1,350 @@
+{
+  "version": 1,
+  "status": "IN PROGRESS / BLOCKED ON HARDWARE",
+  "generated_at": "2026-09-22T00:00:00Z",
+  "notes": "Soak matrix scaffolding for Release Candidate validation. All unmeasured physical fleet values are strictly null until real multi-day hardware runs complete.",
+  "operating_systems": {
+    "windows": [
+      {
+        "id": "win-11-24h2",
+        "name": "Windows 11 (24H2/23H2/22H2)",
+        "arch": "x86_64",
+        "status": "blocked_on_hardware",
+        "ci_runner": "windows-latest",
+        "measured_metrics": {
+          "crash_free_hours": null,
+          "completion_rate": null,
+          "false_action_rate": null,
+          "p95_cancel_latency_ms": null,
+          "memory_growth_mb_24h": null,
+          "orphan_process_count": null
+        }
+      },
+      {
+        "id": "win-10-22h2",
+        "name": "Windows 10 (22H2/21H2)",
+        "arch": "x86_64",
+        "status": "blocked_on_hardware",
+        "ci_runner": "windows-2022",
+        "measured_metrics": {
+          "crash_free_hours": null,
+          "completion_rate": null,
+          "false_action_rate": null,
+          "p95_cancel_latency_ms": null,
+          "memory_growth_mb_24h": null,
+          "orphan_process_count": null
+        }
+      },
+      {
+        "id": "win-server-2025",
+        "name": "Windows Server 2025 / 2022 Standard",
+        "arch": "x86_64",
+        "status": "scaffolded",
+        "ci_runner": "local-workstation",
+        "measured_metrics": {
+          "crash_free_hours": null,
+          "completion_rate": null,
+          "false_action_rate": null,
+          "p95_cancel_latency_ms": null,
+          "memory_growth_mb_24h": null,
+          "orphan_process_count": null
+        }
+      }
+    ],
+    "macos": [
+      {
+        "id": "macos-15-arm64",
+        "name": "macOS 15 Sequoia (Apple Silicon M-series)",
+        "arch": "aarch64",
+        "status": "blocked_on_hardware",
+        "ci_runner": "macos-15",
+        "measured_metrics": {
+          "crash_free_hours": null,
+          "completion_rate": null,
+          "false_action_rate": null,
+          "p95_cancel_latency_ms": null,
+          "memory_growth_mb_24h": null,
+          "orphan_process_count": null
+        }
+      },
+      {
+        "id": "macos-14-arm64",
+        "name": "macOS 14 Sonoma (Apple Silicon M-series)",
+        "arch": "aarch64",
+        "status": "blocked_on_hardware",
+        "ci_runner": "macos-14",
+        "measured_metrics": {
+          "crash_free_hours": null,
+          "completion_rate": null,
+          "false_action_rate": null,
+          "p95_cancel_latency_ms": null,
+          "memory_growth_mb_24h": null,
+          "orphan_process_count": null
+        }
+      },
+      {
+        "id": "macos-14-x86_64",
+        "name": "macOS 14 Sonoma (Intel legacy x86_64)",
+        "arch": "x86_64",
+        "status": "blocked_on_hardware",
+        "ci_runner": "macos-13",
+        "measured_metrics": {
+          "crash_free_hours": null,
+          "completion_rate": null,
+          "false_action_rate": null,
+          "p95_cancel_latency_ms": null,
+          "memory_growth_mb_24h": null,
+          "orphan_process_count": null
+        }
+      }
+    ],
+    "linux": [
+      {
+        "id": "ubuntu-24_04",
+        "name": "Ubuntu 24.04 LTS (GNOME Wayland / X11)",
+        "arch": "x86_64",
+        "status": "blocked_on_hardware",
+        "ci_runner": "ubuntu-24.04",
+        "measured_metrics": {
+          "crash_free_hours": null,
+          "completion_rate": null,
+          "false_action_rate": null,
+          "p95_cancel_latency_ms": null,
+          "memory_growth_mb_24h": null,
+          "orphan_process_count": null
+        }
+      },
+      {
+        "id": "ubuntu-22_04",
+        "name": "Ubuntu 22.04 LTS",
+        "arch": "x86_64",
+        "status": "blocked_on_hardware",
+        "ci_runner": "ubuntu-22.04",
+        "measured_metrics": {
+          "crash_free_hours": null,
+          "completion_rate": null,
+          "false_action_rate": null,
+          "p95_cancel_latency_ms": null,
+          "memory_growth_mb_24h": null,
+          "orphan_process_count": null
+        }
+      },
+      {
+        "id": "fedora-40",
+        "name": "Fedora 40 / 41 (Workstation GNOME)",
+        "arch": "x86_64",
+        "status": "blocked_on_hardware",
+        "ci_runner": "fedora-container",
+        "measured_metrics": {
+          "crash_free_hours": null,
+          "completion_rate": null,
+          "false_action_rate": null,
+          "p95_cancel_latency_ms": null,
+          "memory_growth_mb_24h": null,
+          "orphan_process_count": null
+        }
+      }
+    ]
+  },
+  "hardware_profiles": [
+    {
+      "id": "low-end-cpu",
+      "name": "Low-end CPU-only",
+      "specs": "2-4 cores, no AVX2 or basic AVX, 4-8 GB RAM, iGPU or basic display",
+      "status": "blocked_on_hardware",
+      "deterministic_seam": "cgroups/job-object CPU quota throttling and memory limits",
+      "measured_metrics": {
+        "stt_rtf": null,
+        "cold_start_ms": null,
+        "peak_ram_mb": null
+      }
+    },
+    {
+      "id": "modern-x86",
+      "name": "Modern x86 Desktop / Laptop",
+      "specs": "12-16 cores, AVX2+FMA, 16-32 GB RAM",
+      "status": "blocked_on_hardware",
+      "deterministic_seam": "Native workstation execution",
+      "measured_metrics": {
+        "stt_rtf": null,
+        "cold_start_ms": null,
+        "peak_ram_mb": null
+      }
+    },
+    {
+      "id": "apple-silicon",
+      "name": "Apple Silicon (M1/M2/M3/M4)",
+      "specs": "Apple Silicon unified memory, Metal GPU, Apple Neural Engine",
+      "status": "blocked_on_hardware",
+      "deterministic_seam": "macOS runner environment",
+      "measured_metrics": {
+        "stt_rtf": null,
+        "cold_start_ms": null,
+        "peak_ram_mb": null
+      }
+    },
+    {
+      "id": "nvidia-gpu",
+      "name": "NVIDIA Discrete GPU",
+      "specs": "CUDA compute capability >= 7.0, >= 4 GB VRAM",
+      "status": "blocked_on_hardware",
+      "deterministic_seam": "CUDA device probing and runtime detection",
+      "measured_metrics": {
+        "stt_rtf": null,
+        "cold_start_ms": null,
+        "peak_vram_mb": null
+      }
+    },
+    {
+      "id": "multi-dpi-monitors",
+      "name": "Mixed-DPI & Multi-Monitor Setup",
+      "specs": "Primary 4K (150%/200%) + Secondary 1080p (100%), negative coordinate offset",
+      "status": "blocked_on_hardware",
+      "deterministic_seam": "Virtual desktop coordinate transform and DPI scale injector",
+      "measured_metrics": {
+        "click_through_verified": null,
+        "coordinate_drift_px": null
+      }
+    }
+  ],
+  "scenarios": [
+    {
+      "id": "SCN-01-runtime-24h",
+      "name": "24h Background Runtime",
+      "description": "Continuous 24-hour background process liveness without unhandled exit, memory leak, or handle exhaustion.",
+      "duration_target_hours": 24,
+      "status": "blocked_on_hardware",
+      "deterministic_seam": "Time-accelerated simulated session runner",
+      "measured_metrics": {
+        "hours_achieved": null,
+        "final_rss_mb": null,
+        "crash_count": null
+      }
+    },
+    {
+      "id": "SCN-02-runtime-72h",
+      "name": "72h Continuous Soak",
+      "description": "72-hour sustained multi-day background operation under periodic wake-word and manual trigger load.",
+      "duration_target_hours": 72,
+      "status": "blocked_on_hardware",
+      "deterministic_seam": "Time-accelerated simulated session runner",
+      "measured_metrics": {
+        "hours_achieved": null,
+        "final_rss_mb": null,
+        "crash_count": null
+      }
+    },
+    {
+      "id": "SCN-03-listen-cycles",
+      "name": "Repeated Listen Cycles (1000+ invocations)",
+      "description": "1000 sequential voice trigger and transcription cycles testing pipeline reset and memory stability.",
+      "cycle_target": 1000,
+      "status": "blocked_on_hardware",
+      "deterministic_seam": "Automated audio corpus injection pipeline",
+      "measured_metrics": {
+        "cycles_completed": null,
+        "success_rate": null,
+        "leak_bytes_per_cycle": null
+      }
+    },
+    {
+      "id": "SCN-04-sleep-resume",
+      "name": "Sleep and Resume Transitions",
+      "description": "System ACPI suspend/sleep during idle, transcribing, and active execution, followed by wake.",
+      "status": "blocked_on_hardware",
+      "deterministic_seam": "Power event injection seam (Plan 13 lab-gated case)",
+      "measured_metrics": {
+        "suspends_tested": null,
+        "clean_wake_recovery_rate": null
+      }
+    },
+    {
+      "id": "SCN-05-network-loss",
+      "name": "Network Loss and Return",
+      "description": "Abrupt offline disconnection during local STT, planner requests, and model downloads.",
+      "status": "blocked_on_hardware",
+      "deterministic_seam": "Local loopback route blackholing and HTTP error injection",
+      "measured_metrics": {
+        "local_offline_survival_rate": null,
+        "remote_graceful_degrade_rate": null
+      }
+    },
+    {
+      "id": "SCN-06-device-switching",
+      "name": "Microphone and Bluetooth Switching",
+      "description": "Audio device disconnect, default change, and Bluetooth HFP (16k) to A2DP transition during capture.",
+      "status": "blocked_on_hardware",
+      "deterministic_seam": "Virtual audio device arrival/removal events (Plan 13 lab-gated case)",
+      "measured_metrics": {
+        "transitions_tested": null,
+        "audio_underrun_count": null
+      }
+    },
+    {
+      "id": "SCN-07-agent-lifecycle",
+      "name": "Harness Agent Start / Stop / Cancel",
+      "description": "Repeated lifecycle of Codex / ACP / CLI agent sessions including SIGINT interrupt and process reaping.",
+      "status": "blocked_on_hardware",
+      "deterministic_seam": "Process supervisor child tracking tests",
+      "measured_metrics": {
+        "sessions_executed": null,
+        "orphan_count": null
+      }
+    },
+    {
+      "id": "SCN-08-interrupted-model-update",
+      "name": "Model and Update Interruption",
+      "description": "Process kill or connection abort mid-download; verifies staging cleanup and zero active corruption.",
+      "status": "scaffolded",
+      "deterministic_seam": "FaultInjection 1/13: Model download interrupted mid-stream",
+      "measured_metrics": {
+        "simulated_pass": true,
+        "active_corruption_detected": false
+      }
+    },
+    {
+      "id": "SCN-09-crash-recovery",
+      "name": "Forced Child and STT Crashes",
+      "description": "SIGKILL of STT engine and child processes; verifies supervisor harvest and automatic recovery.",
+      "status": "scaffolded",
+      "deterministic_seam": "FaultInjection 4/13 & 11/13: STT and agent crash harvested",
+      "measured_metrics": {
+        "simulated_pass": true,
+        "supervisor_reaped": true
+      }
+    },
+    {
+      "id": "SCN-10-setup-upgrade-uninstall",
+      "name": "Setup, Upgrade, and Reinstall Paths",
+      "description": "Fresh onboarding, v0.1.0 -> v0.2.0 upgrade preserving settings/secrets, and clean uninstallation.",
+      "status": "blocked_on_hardware",
+      "deterministic_seam": "Config migration v1->v2 unit fixtures and isolated config directories",
+      "measured_metrics": {
+        "config_migration_pass": null,
+        "secret_preservation_pass": null
+      }
+    },
+    {
+      "id": "SCN-11-shortcut-conflicts",
+      "name": "Global Shortcut Conflicts",
+      "description": "Hotkey conflict when another application reserves the configured shortcut; verifies fallback warning.",
+      "status": "scaffolded",
+      "deterministic_seam": "FaultInjection 8/13: Hotkey conflict handled gracefully",
+      "measured_metrics": {
+        "simulated_pass": true,
+        "ui_crash": false
+      }
+    },
+    {
+      "id": "SCN-12-disk-pressure",
+      "name": "Disk Full and Storage Pressure",
+      "description": "Operation under low disk space conditions; verifies preflight failures and bounded log rotation.",
+      "status": "scaffolded",
+      "deterministic_seam": "FaultInjection 2/13: Disk full preflight fails closed",
+      "measured_metrics": {
+        "simulated_pass": true,
+        "fail_closed": true
+      }
+    }
+  ]
+}

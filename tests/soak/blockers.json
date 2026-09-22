@@ -1,0 +1,59 @@
+{
+  "version": 1,
+  "last_reviewed_at": "2026-09-22T00:00:00Z",
+  "exit_criteria_met": false,
+  "summary": {
+    "ready_for_release": false,
+    "open_blockers": 2,
+    "open_major_defects": 0,
+    "known_limitations": 2,
+    "status": "BLOCKED ON HARDWARE AND CREDENTIALS"
+  },
+  "blockers": [
+    {
+      "id": "BLK-001",
+      "title": "Multi-OS 72-hour physical fleet hardware soak",
+      "plan_id": "19_RELEASE_CANDIDATE_SOAK",
+      "severity": "RELEASE_BLOCKER",
+      "status": "BLOCKED_ON_HARDWARE",
+      "owner": "QA / Release Engineering",
+      "description": "Validation on physical hardware matrix (Apple Silicon M-series, low-end x86, NVIDIA discrete GPU, multi-DPI physical monitors, Bluetooth audio transitions) cannot execute on virtual CI or single dev workstation.",
+      "blocking_reason": "Physical test hardware fleet not provisioned in current environment. Software scaffolding and fault-injection simulations are complete, but physical soak hours cannot be claimed without reproducible execution.",
+      "resolution_criteria": "Execute continuous 24h and 72h soak runs across target physical machines using scripts/soak-collect.mjs; record metrics meeting frozen thresholds in tests/soak/matrix.json.",
+      "verification_step": "node scripts/soak-collect.mjs --verify-matrix tests/soak/matrix.json"
+    },
+    {
+      "id": "BLK-002",
+      "title": "Production code signing and notarization credentials",
+      "plan_id": "17_SIGNING_UPDATER_RELEASES",
+      "severity": "RELEASE_BLOCKER",
+      "status": "BLOCKED_ON_CREDENTIALS",
+      "owner": "Release Engineering / Security",
+      "description": "Production Authenticode certificate for Windows, Apple Developer ID Application certificate + notarization credentials for macOS, and Tauri updater private signing key are not provisioned in CI secrets.",
+      "blocking_reason": "External signing identities withheld from repository code by design to prevent credential exposure.",
+      "resolution_criteria": "Provision valid certificates and keys in GitHub repository secrets; verify that release-preflight.mjs exits 0 in CI publish pipeline.",
+      "verification_step": "node scripts/release-preflight.mjs"
+    }
+  ],
+  "known_limitations": [
+    {
+      "id": "LIM-001",
+      "title": "Native streaming STT runs via authenticated HTTP loopback seam",
+      "plan_id": "12_STT_NATIVE_STREAMING",
+      "description": "Production STT uses the Moonshine/Nemotron HTTP loopback engine with session tokens. Native C++ in-process streaming seam is defined with native_streaming_supported: false.",
+      "impact": "Low. Offline voice control works end-to-end; native in-process streaming can be activated in a subsequent release without API break."
+    },
+    {
+      "id": "LIM-002",
+      "title": "Local planner requires explicit local model download or OpenAI-compatible endpoint",
+      "plan_id": "04_LOCAL_PLANNER",
+      "description": "Deterministic reflex routing (Tier 0) handles direct commands instantly without models. Complex multi-step planner requires local model download or remote key.",
+      "impact": "Low. Fail-closed fallback reports planner-unavailable without crashing."
+    }
+  ],
+  "process": {
+    "review_frequency": "Weekly and prior to any release candidate build",
+    "blocker_addition_policy": "Any P0 or P1 defect discovered during soak or security audit automatically creates an entry here with status OPEN",
+    "blocker_closure_policy": "Can only transition to RESOLVED with passing reproducible automated test or signed physical hardware log reference"
+  }
+}

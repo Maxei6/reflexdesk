@@ -1,0 +1,78 @@
+name: Release Candidate Soak
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration_mode:
+        description: "Soak duration mode"
+        required: true
+        default: "smoke_simulation"
+        type: choice
+        options:
+          - "smoke_simulation"
+          - "24h_physical_fleet"
+          - "72h_physical_fleet"
+      strict_gates:
+        description: "Enforce strict zero-unmeasured hardware gate (fails if physical fleet absent)"
+        required: true
+        default: false
+        type: boolean
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  entry-criteria:
+    name: Soak Entry Criteria Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: 22
+      - run: npm ci
+      - name: Evaluate Entry Criteria
+        run: node scripts/soak-entry-check.mjs
+
+  soak-matrix:
+    name: Soak Runner (${{ matrix.platform }})
+    needs: [entry-criteria]
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [windows-latest, macos-latest, ubuntu-24.04]
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: 22
+      - run: npm ci
+
+      - name: Run Fault-Injection Soak Simulation
+        run: node scripts/soak-collect.mjs --simulate
+
+      - name: Audit Soak Matrix and Hardware Requirements
+        id: matrix-audit
+        shell: bash
+        run: |
+          node scripts/soak-collect.mjs --check
+          echo "### Soak Status: BLOCKED ON HARDWARE" >> $GITHUB_STEP_SUMMARY
+          echo "Virtual CI runner (${{ matrix.platform }}) does not provide physical fleet hardware (Apple Silicon, low-end x86, NVIDIA GPU, physical Bluetooth audio)." >> $GITHUB_STEP_SUMMARY
+          echo "Simulated fault-injection hooks and redaction-routed telemetry PASSED." >> $GITHUB_STEP_SUMMARY
+          echo "Unmeasured physical metrics remain strictly null per Plan 19 requirements." >> $GITHUB_STEP_SUMMARY
+
+      - name: Fail if Strict Hardware Verification Required
+        if: ${{ inputs.strict_gates }}
+        shell: bash
+        run: |
+          echo "::error::Strict release gate failed: Physical hardware fleet not verified. Run remains BLOCKED ON HARDWARE."
+          exit 1
+
+      - uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
+        if: always()
+        with:
+          name: soak-report-${{ matrix.platform }}
+          path: tests/soak/*.json
+          retention-days: 14
