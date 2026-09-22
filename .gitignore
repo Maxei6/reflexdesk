@@ -33,9 +33,9 @@ Thumbs.db
 .vscode/
 
 # Generated local STT runtime (downloaded by npm run prepare:stt)
-src-tauri/resources/crispasr
+src-tauri/resources/crispasr/
 src-tauri/resources/crispasr.exe
-src-tauri/resources/crispasr-legacy
+src-tauri/resources/crispasr-legacy/
 src-tauri/resources/crispasr-legacy.exe
 src-tauri/resources/crispasr-runtime.json
 src-tauri/resources/CRISPASR_LICENSE.txt
