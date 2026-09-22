@@ -73,12 +73,17 @@ async function positionOverlay() {
     const scale = Number(monitor.scaleFactor || 1);
     const gap = Math.round(56 * scale);
 
+    const area = monitor.workArea || {
+      position: monitor.position,
+      size: monitor.size,
+    };
+
     const x =
-      monitor.position.x
-      + Math.round((monitor.size.width - size.width) / 2);
+      area.position.x
+      + Math.round((area.size.width - size.width) / 2);
     const y =
-      monitor.position.y
-      + monitor.size.height
+      area.position.y
+      + area.size.height
       - size.height
       - gap;
 
