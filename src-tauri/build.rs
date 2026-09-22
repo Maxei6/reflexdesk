@@ -42,6 +42,10 @@ fn main() {
             "stop_skill_recording",
             "compile_skill_draft",
             "get_skill_recording_status",
+            "get_update_status",
+            "set_update_channel",
+            "check_for_updates",
+            "rollback_update",
         ])),
     )
     .unwrap();

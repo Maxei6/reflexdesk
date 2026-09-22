@@ -1,0 +1,13 @@
+{
+  "version": "0.2.0",
+  "notes": "Tampered manifest fixture with invalid signature and altered payload",
+  "pub_date": "2026-09-22T12:00:00Z",
+  "platforms": {
+    "windows-x86_64": {
+      "signature": "TAMPERED_INVALID_BASE64_SIGNATURE==",
+      "url": "https://releases.reflexdesk.io/v0.2.0/ReflexDesk_0.2.0_x64_en-US.msi.zip",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  },
+  "rollout_percentage": 100
+}

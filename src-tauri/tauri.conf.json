@@ -64,5 +64,11 @@
     "resources": [
       "resources/**/*"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "",
+      "endpoints": []
+    }
   }
 }

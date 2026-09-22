@@ -36,6 +36,7 @@
     "allow-disconnect-provider",
     "allow-get-provider-status",
     "allow-list-secret-metadata",
-    "allow-skills-manage"
+    "allow-skills-manage",
+    "allow-update-manage"
   ]
 }

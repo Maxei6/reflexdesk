@@ -293,6 +293,20 @@ pub fn tool_registry() -> HashMap<&'static str, ToolDef> {
             needs_confirm: true,
             external: false,
         },
+        ToolDef {
+            name: "system.update_check",
+            risk: RiskClass::Safe,
+            capability: "system.update",
+            needs_confirm: false,
+            external: false,
+        },
+        ToolDef {
+            name: "system.update_apply",
+            risk: RiskClass::Destructive,
+            capability: "system.update",
+            needs_confirm: true,
+            external: true,
+        },
     ] {
         map.insert(def.name, def);
     }
@@ -759,6 +773,17 @@ pub fn validate_args(tool: &str, args: &serde_json::Value) -> Result<serde_json:
                 "expect": args.get("expect").cloned().unwrap_or(serde_json::Value::Null),
                 "timeout_ms": timeout_ms,
             }))
+        }
+        "system.update_check" => {
+            let channel = args.get("channel").and_then(serde_json::Value::as_str).unwrap_or("stable");
+            Ok(serde_json::json!({ "channel": channel }))
+        }
+        "system.update_apply" => {
+            let target_version = args
+                .get("target_version")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "invalid-args: system.update_apply requires {target_version: string}".to_string())?;
+            Ok(serde_json::json!({ "target_version": target_version }))
         }
         _ => Err(format!("unknown-tool: {tool}")),
     }

@@ -479,11 +479,32 @@ pub fn default_cache_dir() -> PathBuf {
 // ============================================================================
 // ModelManager Service
 // ============================================================================
+/// Active model acquisition, migration, or repair transaction.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelTransaction {
+    pub tx_id: String,
+    pub model_id: String,
+    pub operation: String,
+    pub started_at_secs: u64,
+}
+
+/// RAII guard that completes or aborts a model transaction when dropped.
+pub struct ModelTransactionGuard<'a> {
+    manager: &'a ModelManager,
+    pub tx_id: String,
+}
+
+impl<'a> Drop for ModelTransactionGuard<'a> {
+    fn drop(&mut self) {
+        self.manager.end_transaction(&self.tx_id);
+    }
+}
 
 pub struct ModelManager {
     cache_dir: PathBuf,
     registry: ModelRegistry,
     states: Mutex<HashMap<String, ModelStatus>>,
+    transactions: Mutex<HashMap<String, ModelTransaction>>,
 }
 
 impl ModelManager {
@@ -500,6 +521,7 @@ impl ModelManager {
             cache_dir,
             registry,
             states: Mutex::new(HashMap::new()),
+            transactions: Mutex::new(HashMap::new()),
         })
     }
 
@@ -525,6 +547,71 @@ impl ModelManager {
             upstream: artifact.upstream,
             license: artifact.license.unwrap_or_else(|| "Unknown".into()),
             notice: artifact.notice.unwrap_or_default(),
+        })
+    }
+    /// Begin a model acquisition, download, import, or repair transaction.
+    /// Fails if an application update is currently in progress, or if a transaction
+    /// is already active for this model.
+    pub fn begin_transaction(&self, model_id: &str, operation: &str) -> Result<String, String> {
+        if crate::updater::is_update_in_progress() {
+            return Err("cannot begin model transaction: application update is in progress".into());
+        }
+        let mut txs = self
+            .transactions
+            .lock()
+            .map_err(|_| "model transaction lock poisoned")?;
+        if txs.values().any(|t| t.model_id == model_id) {
+            return Err(format!(
+                "cannot begin transaction for {model_id}: transaction already in progress"
+            ));
+        }
+        let started_at_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let tx_id = format!("tx_{}_{started_at_secs}", model_id.replace('.', "_"));
+        txs.insert(
+            tx_id.clone(),
+            ModelTransaction {
+                tx_id: tx_id.clone(),
+                model_id: model_id.to_string(),
+                operation: operation.to_string(),
+                started_at_secs,
+            },
+        );
+        Ok(tx_id)
+    }
+
+    /// Complete or abort an active model transaction.
+    pub fn end_transaction(&self, tx_id: &str) -> bool {
+        if let Ok(mut txs) = self.transactions.lock() {
+            txs.remove(tx_id).is_some()
+        } else {
+            false
+        }
+    }
+
+    /// Returns true if any model acquisition/migration transaction is actively in flight.
+    pub fn is_transaction_in_progress(&self) -> bool {
+        self.transactions
+            .lock()
+            .map(|txs| !txs.is_empty())
+            .unwrap_or(false)
+    }
+
+    /// Lists current active model transactions.
+    pub fn active_transactions(&self) -> Vec<ModelTransaction> {
+        self.transactions
+            .lock()
+            .map(|txs| txs.values().cloned().collect())
+            .unwrap_or_default()
+    }
+    /// Acquires an RAII transaction guard for model operations.
+    pub fn acquire_transaction<'a>(&'a self, model_id: &str, operation: &str) -> Result<ModelTransactionGuard<'a>, String> {
+        let tx_id = self.begin_transaction(model_id, operation)?;
+        Ok(ModelTransactionGuard {
+            manager: self,
+            tx_id,
         })
     }
 
@@ -705,6 +792,7 @@ impl ModelManager {
     where
         F: Fn(ModelProgress) + Send + Sync + 'static,
     {
+        let _tx_guard = self.acquire_transaction(model_id, "download_and_activate")?;
         let artifact = self.get_artifact(model_id)?;
         let expected_size = artifact
             .size_bytes
@@ -948,6 +1036,7 @@ impl ModelManager {
     where
         F: Fn(ModelProgress) + Send + Sync + 'static,
     {
+        let _tx_guard = self.acquire_transaction(model_id, "import_offline")?;
         if !source_path.is_file() {
             return Err(format!(
                 "offline import source not found: {}",

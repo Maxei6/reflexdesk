@@ -14,6 +14,11 @@ const jsonFiles = [
   "tests/soak/thresholds.json",
   "tests/soak/matrix.json",
   "tests/soak/blockers.json",
+  "tests/fixtures/updater/valid-manifest.json",
+  "tests/fixtures/updater/unsigned-manifest.json",
+  "tests/fixtures/updater/tampered-manifest.json",
+  "tests/fixtures/updater/downgrade-manifest.json",
+  "tests/fixtures/updater/staged-rollout-manifest.json",
 ];
 
 for (const path of jsonFiles) JSON.parse(await readFile(path, "utf8"));
@@ -56,6 +61,9 @@ const required = [
   "scripts/soak-collect.mjs",
   "scripts/soak-entry-check.mjs",
   ".github/workflows/soak.yml",
+  "src-tauri/src/updater.rs",
+  "scripts/release-preflight.mjs",
+  "scripts/artifact-metadata.mjs",
 ];
 for (const path of required) accessSync(path);
 

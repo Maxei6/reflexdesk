@@ -27,6 +27,9 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      - name: Verify preview build configuration (unsigned preview permitted)
+        run: node scripts/release-preflight.mjs --allow-preview --channel=preview
+
       - name: Install Linux Tauri dependencies
         if: matrix.platform == 'ubuntu-24.04'
         run: |
@@ -46,3 +49,6 @@ jobs:
         with:
           uploadWorkflowArtifacts: true
           workflowArtifactNamePattern: "reflexdesk-[platform]-[arch]-[bundle]"
+
+      - name: Emit artifact preview metadata
+        run: node scripts/artifact-metadata.mjs --channel=preview

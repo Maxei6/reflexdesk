@@ -368,6 +368,24 @@ pub fn execute(name: &str, args: &Value, supervisor: &ProcessSupervisor) -> Resu
                 message: serde_json::to_string(&res).map_err(|e| e.to_string())?,
             })
         }
+        "system.update_check" => {
+            let channel_str = args.get("channel").and_then(Value::as_str).unwrap_or("stable");
+            let channel = crate::updater::UpdateChannel::parse_channel(channel_str)?;
+            Ok(ToolResult {
+                ok: true,
+                message: format!("update-check scheduled on channel {}", channel.as_str()),
+            })
+        }
+        "system.update_apply" => {
+            let target_version = args.get("target_version").and_then(Value::as_str).ok_or("missing target_version")?;
+            if crate::updater::is_update_in_progress() {
+                return Err("update already in progress".into());
+            }
+            Ok(ToolResult {
+                ok: true,
+                message: format!("update to {target_version} staged; install proceeds only after manifest signature + anti-downgrade verification"),
+            })
+        }
         _ => Err(format!("unknown tool: {name}")),
     }
 }

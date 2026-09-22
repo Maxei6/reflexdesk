@@ -9,7 +9,32 @@ permissions:
   contents: write
 
 jobs:
+  preflight:
+    name: Release preflight verification
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Verify release credentials and signatures (fails closed)
+        run: node scripts/release-preflight.mjs --channel=stable
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
+          UPDATER_FEED_ENDPOINT: ${{ secrets.UPDATER_FEED_ENDPOINT }}
+
   build:
+    needs: preflight
     strategy:
       fail-fast: false
       matrix:
@@ -46,3 +71,6 @@ jobs:
           releaseBody: "Unsigned preview build. Model packs download separately on first use."
           releaseDraft: true
           prerelease: true
+
+      - name: Emit artifact release metadata
+        run: node scripts/artifact-metadata.mjs --channel=stable

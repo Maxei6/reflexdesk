@@ -1,0 +1,13 @@
+{
+  "version": "0.2.0",
+  "notes": "Staged rollout candidate release",
+  "pub_date": "2026-09-22T12:00:00Z",
+  "platforms": {
+    "windows-x86_64": {
+      "signature": "VALID_SIGNATURE_STUB",
+      "url": "https://releases.reflexdesk.io/v0.2.0/ReflexDesk_0.2.0_x64_en-US.msi.zip",
+      "sha256": "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+    }
+  },
+  "rollout_percentage": 25
+}

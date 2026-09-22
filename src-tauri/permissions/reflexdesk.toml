@@ -133,3 +133,13 @@ commands.allow = [
     "compile_skill_draft",
     "get_skill_recording_status",
 ]
+
+[[permission]]
+identifier = "allow-update-manage"
+description = "Inspect update status, change release channel, check updates, and rollback (main window only)."
+commands.allow = [
+    "get_update_status",
+    "set_update_channel",
+    "check_for_updates",
+    "rollback_update",
+]

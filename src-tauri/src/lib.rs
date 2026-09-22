@@ -19,6 +19,7 @@ mod tools;
 mod transcript;
 mod tray;
 pub mod skills;
+pub mod updater;
 
 use lifecycle::{Phase, RuntimeSnapshot, RuntimeState};
 use model_manager::{ModelManager, ModelProgress, ModelStatus, DEFAULT_STT_MODEL_ID};
@@ -1257,6 +1258,12 @@ pub fn run() {
             let vault_store = secrets::OsVaultSecretStore::new(vault_dir)
                 .map_err(|e| format!("failed to initialize OsVaultSecretStore: {e}"))?;
             app.manage(secrets::AppSecretStore::new(std::sync::Arc::new(vault_store)));
+            let app_data_dir = app
+                .path()
+                .app_data_dir()
+                .unwrap_or_else(|_| std::path::PathBuf::from("."));
+            let updater_service = updater::UpdaterService::new(app_data_dir);
+            app.manage(updater_service);
 
             tray::setup(app)?;
 
@@ -1363,6 +1370,10 @@ pub fn run() {
             stop_skill_recording,
             compile_skill_draft,
             get_skill_recording_status,
+            updater::get_update_status,
+            updater::set_update_channel,
+            updater::check_for_updates,
+            updater::rollback_update,
         ])
         .expect("error while running ReflexDesk");
 }

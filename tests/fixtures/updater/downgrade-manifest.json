@@ -1,0 +1,13 @@
+{
+  "version": "0.0.9",
+  "notes": "Attempted downgrade release manifest",
+  "pub_date": "2026-01-01T00:00:00Z",
+  "platforms": {
+    "windows-x86_64": {
+      "signature": "VALID_SIGNATURE_FOR_OLD_VERSION",
+      "url": "https://releases.reflexdesk.io/v0.0.9/ReflexDesk_0.0.9_x64_en-US.msi.zip",
+      "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+    }
+  },
+  "rollout_percentage": 100
+}
