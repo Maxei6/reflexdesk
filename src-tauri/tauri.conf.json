@@ -63,7 +63,7 @@
       "icons/icon.ico"
     ],
     "resources": [
-      "resources/*"
+      "resources/**/*"
     ]
   }
 }
