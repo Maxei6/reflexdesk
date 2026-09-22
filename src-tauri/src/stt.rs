@@ -1,6 +1,7 @@
 use serde::Serialize;
 use std::{
     io::{BufRead, BufReader},
+    net::TcpListener,
     path::PathBuf,
     process::{Child, Command, Stdio},
     sync::Mutex,
@@ -9,18 +10,25 @@ use std::{
 };
 use tauri::{AppHandle, Emitter, Manager};
 
-const PORT: u16 = 8789;
 const PROVIDER: &str = "nemotron";
 const MODEL: &str = "nvidia/nemotron-3.5-asr-streaming-0.6b";
 
+#[derive(Clone)]
+struct LocalEndpoint {
+    port: u16,
+    token: String,
+}
+
 pub struct SttState {
     child: Mutex<Option<Child>>,
+    endpoint: Mutex<Option<LocalEndpoint>>,
 }
 
 impl Default for SttState {
     fn default() -> Self {
         Self {
             child: Mutex::new(None),
+            endpoint: Mutex::new(None),
         }
     }
 }
@@ -43,7 +51,7 @@ pub struct SttStatus {
     pub runtime_found: bool,
     pub running: bool,
     pub ready: bool,
-    pub endpoint: String,
+    pub endpoint: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -51,10 +59,6 @@ pub struct Transcript {
     pub text: String,
     pub provider: &'static str,
     pub latency_ms: u128,
-}
-
-fn endpoint(path: &str) -> String {
-    format!("http://127.0.0.1:{PORT}{path}")
 }
 
 fn preferred_runtime_dir() -> &'static str {
@@ -122,15 +126,32 @@ fn runtime_path(app: &AppHandle) -> Option<PathBuf> {
     runtime_candidates(app).into_iter().find(|path| path.is_file())
 }
 
-fn health() -> bool {
+fn endpoint_url(endpoint: &LocalEndpoint, path: &str) -> String {
+    format!("http://127.0.0.1:{}{}", endpoint.port, path)
+}
+
+fn endpoint_snapshot(state: &SttState) -> Option<LocalEndpoint> {
+    state.endpoint.lock().ok().and_then(|guard| guard.clone())
+}
+
+fn health(state: &SttState) -> bool {
+    let Some(endpoint) = endpoint_snapshot(state) else {
+        return false;
+    };
+
     reqwest::blocking::Client::builder()
-        .timeout(Duration::from_millis(250))
+        .timeout(Duration::from_millis(350))
         .build()
         .ok()
-        .and_then(|client| client.get(endpoint("/health")).send().ok())
+        .and_then(|client| client.get(endpoint_url(&endpoint, "/health")).send().ok())
         .filter(|response| response.status().is_success())
         .and_then(|response| response.json::<serde_json::Value>().ok())
-        .and_then(|payload| payload.get("backend").and_then(|value| value.as_str()).map(str::to_owned))
+        .and_then(|payload| {
+            payload
+                .get("backend")
+                .and_then(|value| value.as_str())
+                .map(str::to_owned)
+        })
         .map(|backend| backend == "nemotron")
         .unwrap_or(false)
 }
@@ -152,14 +173,30 @@ fn child_running(state: &SttState) -> bool {
     }
 }
 
+fn allocate_endpoint() -> Result<LocalEndpoint, String> {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .map_err(|e| format!("could not reserve local STT port: {e}"))?;
+    let port = listener.local_addr().map_err(|e| e.to_string())?.port();
+    drop(listener);
+
+    let token = format!(
+        "{:032x}{:032x}",
+        rand::random::<u128>(),
+        rand::random::<u128>()
+    );
+
+    Ok(LocalEndpoint { port, token })
+}
+
 pub fn status(app: &AppHandle, state: &SttState) -> SttStatus {
+    let endpoint = endpoint_snapshot(state);
     SttStatus {
         provider: PROVIDER,
         model: MODEL,
         runtime_found: runtime_path(app).is_some(),
-        running: child_running(state) || health(),
-        ready: health(),
-        endpoint: endpoint(""),
+        running: child_running(state),
+        ready: health(state),
+        endpoint: endpoint.map(|value| format!("127.0.0.1:{}", value.port)),
     }
 }
 
@@ -177,6 +214,7 @@ fn forward_logs<R: std::io::Read + Send + 'static>(
                 || lower.contains("server")
                 || lower.contains("error")
                 || lower.contains("listen")
+                || lower.contains("cache")
             {
                 let _ = app.emit(
                     "reflexdesk://stt-status",
@@ -188,7 +226,7 @@ fn forward_logs<R: std::io::Read + Send + 'static>(
 }
 
 pub fn start(app: &AppHandle, state: &SttState) -> Result<SttStatus, String> {
-    if health() {
+    if health(state) {
         return Ok(status(app, state));
     }
 
@@ -196,22 +234,25 @@ pub fn start(app: &AppHandle, state: &SttState) -> Result<SttStatus, String> {
         return Ok(status(app, state));
     }
 
+    shutdown(state)?;
+
     let binary = runtime_path(app).ok_or_else(|| {
-        "CrispASR runtime is missing. Run npm run prepare:stt or reinstall ReflexDesk."
+        "CrispASR runtime is missing. Reinstall ReflexDesk or repair the installation."
             .to_string()
     })?;
 
+    let endpoint = allocate_endpoint()?;
     let threads = std::thread::available_parallelism()
         .map(|n| n.get().min(8).max(2))
         .unwrap_or(4);
-
-    let port = PORT.to_string();
-    let thread_count = threads.to_string();
 
     let runtime_dir = binary
         .parent()
         .ok_or_else(|| "invalid CrispASR runtime path".to_string())?
         .to_path_buf();
+
+    let port = endpoint.port.to_string();
+    let thread_count = threads.to_string();
 
     let mut command = Command::new(&binary);
     command
@@ -232,6 +273,7 @@ pub fn start(app: &AppHandle, state: &SttState) -> Result<SttStatus, String> {
             "-t",
             &thread_count,
         ])
+        .env("CRISPASR_API_KEYS", &endpoint.token)
         .env("CRISPASR_NEMOTRON_CONTEXT_PRESET", "0")
         .env("CRISPASR_NEMOTRON_STREAMING", "1")
         .stdin(Stdio::null())
@@ -247,7 +289,7 @@ pub fn start(app: &AppHandle, state: &SttState) -> Result<SttStatus, String> {
 
     let mut child = command
         .spawn()
-        .map_err(|e| format!("failed to start CrispASR: {e}"))?;
+        .map_err(|e| format!("failed to start local speech engine: {e}"))?;
 
     if let Some(stdout) = child.stdout.take() {
         forward_logs(stdout, app.clone(), "stdout");
@@ -255,6 +297,11 @@ pub fn start(app: &AppHandle, state: &SttState) -> Result<SttStatus, String> {
     if let Some(stderr) = child.stderr.take() {
         forward_logs(stderr, app.clone(), "stderr");
     }
+
+    *state
+        .endpoint
+        .lock()
+        .map_err(|_| "STT endpoint lock poisoned".to_string())? = Some(endpoint);
 
     *state
         .child
@@ -265,7 +312,7 @@ pub fn start(app: &AppHandle, state: &SttState) -> Result<SttStatus, String> {
         "reflexdesk://stt-status",
         serde_json::json!({
             "stream": "runtime",
-            "message": "Starting NVIDIA Nemotron 3.5 locally. First run may download the approximately 458 MB Q4_K model."
+            "message": "Preparing NVIDIA Nemotron 3.5 locally. First setup may download the speech model."
         }),
     );
 
@@ -310,13 +357,14 @@ pub fn transcribe(
         return Err("speech segment exceeds the 30 second command limit".into());
     }
 
-    if !health() {
+    if !health(state) {
         let _ = start(app, state)?;
-        if !health() {
-            return Err("Nemotron is still starting or downloading its model".into());
+        if !health(state) {
+            return Err("speech engine is still preparing".into());
         }
     }
 
+    let endpoint = endpoint_snapshot(state).ok_or("local speech endpoint is unavailable")?;
     let started = Instant::now();
     let wav = wav_bytes(&samples, sample_rate);
 
@@ -338,13 +386,14 @@ pub fn transcribe(
         .timeout(Duration::from_secs(30))
         .build()
         .map_err(|e| e.to_string())?
-        .post(endpoint("/v1/audio/transcriptions"))
+        .post(endpoint_url(&endpoint, "/v1/audio/transcriptions"))
+        .bearer_auth(&endpoint.token)
         .multipart(form)
         .send()
-        .map_err(|e| format!("local Nemotron request failed: {e}"))?;
+        .map_err(|e| format!("local speech request failed: {e}"))?;
 
     if !response.status().is_success() {
-        return Err(format!("local Nemotron returned HTTP {}", response.status()));
+        return Err(format!("local speech engine returned HTTP {}", response.status()));
     }
 
     let payload = response
@@ -359,7 +408,7 @@ pub fn transcribe(
         .to_string();
 
     if text.is_empty() {
-        return Err("Nemotron returned an empty transcript".into());
+        return Err("speech engine returned an empty transcript".into());
     }
 
     Ok(Transcript {
@@ -370,13 +419,17 @@ pub fn transcribe(
 }
 
 pub fn shutdown(state: &SttState) -> Result<(), String> {
-    let mut guard = state
-        .child
-        .lock()
-        .map_err(|_| "STT process lock poisoned".to_string())?;
-    if let Some(mut child) = guard.take() {
-        let _ = child.kill();
-        let _ = child.wait();
+    if let Ok(mut guard) = state.child.lock() {
+        if let Some(mut child) = guard.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
+
+    *state
+        .endpoint
+        .lock()
+        .map_err(|_| "STT endpoint lock poisoned".to_string())? = None;
+
     Ok(())
 }
