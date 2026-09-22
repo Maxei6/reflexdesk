@@ -87,10 +87,6 @@ fn set_listening_internal(app: &AppHandle, next: bool) -> Result<RuntimeSnapshot
             return Err("Local speech engine is recovering".into());
         }
 
-        if let Some(overlay) = app.get_webview_window("overlay") {
-            overlay.show().map_err(|e| e.to_string())?;
-        }
-
         let snapshot = runtime.set_listening(true)?;
         tray::update(app, &snapshot);
         let _ = app.emit("reflexdesk://state", &snapshot);
@@ -247,7 +243,7 @@ fn save_app_settings(
     state.replace(settings.clone())?;
 
     if settings.setup_complete {
-        let _ = apply_autostart(&app, settings.start_at_login);
+        apply_autostart(&app, settings.start_at_login)?;
     }
 
     let _ = app.emit("reflexdesk://settings", &settings);
@@ -284,10 +280,6 @@ fn complete_setup(
     state.replace(settings.clone())?;
     let _ = apply_autostart(&app, settings.start_at_login);
     let _ = update_runtime(&app, Phase::Ready, None);
-
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.hide();
-    }
 
     Ok(settings)
 }
