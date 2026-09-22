@@ -90,6 +90,10 @@ function renderSettings() {
   $("plannerEndpoint").value = settings.planner_endpoint;
   $("plannerModel").value = settings.planner_model;
 
+  $("shortcutKey").textContent = settings.shortcut
+    .replace("CommandOrControl", navigator.platform && navigator.platform.toLowerCase().includes("mac") ? "Cmd" : "Ctrl")
+    .replaceAll("+", " + ");
+
   $("benchmarkInfo").textContent = settings.voice_benchmark_ms
     ? settings.voice_benchmark_ms + " ms last local STT"
     : "Not measured";
