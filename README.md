@@ -1,85 +1,194 @@
 <p align="center">
-  <img src="assets/reflexdesk-hero.webp" alt="ReflexDesk" width="100%" />
+  <img src="assets/reflexdesk-hero.png" alt="ReflexDesk — local voice control for your computer and AI agents" width="100%" />
 </p>
 
-# ⚡ ReflexDesk
+<h1 align="center">⚡ ReflexDesk</h1>
 
-### Your computer, with reflexes.
+<p align="center">
+  <strong>Your computer, with reflexes.</strong><br/>
+  Control your desktop, browser and AI agents with your voice — locally.
+</p>
 
-**Talk. It reacts.** ReflexDesk is an open-source voice layer for your computer, browser, and AI agents — designed to run locally and work fully offline.
+<p align="center">
+  📴 Offline-first &nbsp;·&nbsp; 🔒 Private &nbsp;·&nbsp; ⚡ Fast path &nbsp;·&nbsp; 💻 Windows / macOS / Linux
+</p>
 
-> 🎙️ “Open Spotify.”  
-> 🌐 “Search for the latest local models.”  
-> 🤖 “Run Codex on this repo.”  
-> ✋ “Stop.”
+---
 
-**Simple commands take the reflex path. Hard work escalates only when it needs to.**
+## 🎙️ Say it. It happens.
 
-- 📴 **Offline-first** — local speech, local routing, local planning
-- ⚡ **Fast path** — no giant LLM for “open Spotify”
-- ✨ **Reactive particle overlay** — visible whenever ReflexDesk is listening
-- ⌨️ **Instant global toggle** — `Command/Ctrl + Shift + Space`
-- 🧠 **Configurable AI** — Moonshine, Laya, local planners, future models
-- 🤖 **Harness-aware** — OpenCode, Kilo, Codex, Claude Code, Gemini, ACP
-- 💻 **Windows · macOS · Linux**
+> **“Open Spotify.”**  
+> **“Search for the latest local AI models.”**  
+> **“Run Codex on this repo.”**  
+> **“Stop.”**
 
-## 🚀 Run the current MVP
+ReflexDesk does not wake a giant LLM for every click. Known commands take the fast deterministic path. Harder work escalates only when it needs to.
+
+### ✨ What makes it different
+
+- ⚡ **Reflex path** — common commands execute without a generative LLM
+- 🎧 **NVIDIA Nemotron 3.5** — local multilingual streaming ASR by default
+- 🫧 **Live particle overlay** — transparent white particles move with your voice
+- ⌨️ **Instant kill switch** — `Ctrl/Cmd + Shift + Space`
+- 📴 **Offline after setup** — speech and routing can stay entirely on-device
+- 🧠 **Configurable intelligence** — deterministic router, Laya, local planners
+- 🤖 **Harness-aware** — Codex, OpenCode, Kilo, Claude Code, Gemini, ACP-ready architecture
+- 🛡️ **Typed tools** — AI asks; ReflexDesk decides what is actually allowed
+
+---
+
+## 🫧 The Reflex
+
+When ReflexDesk is listening, a semi-transparent particle orb floats above the desktop.
+
+It is not decoration. Its motion and intensity follow microphone energy in real time, and it changes state while ReflexDesk is transcribing or an agent is working.
+
+```text
+Ctrl + Shift + Space      Windows / Linux
+Cmd  + Shift + Space      macOS
+```
+
+Press once to listen. Press again to stop immediately.
+
+**When ReflexDesk is off, the microphone tracks are explicitly stopped.** The local speech process may stay warm in memory, but it receives no audio.
+
+---
+
+## 🧠 Local stack
+
+| Layer | Default | Job |
+|---|---|---|
+| 🎧 Speech | **NVIDIA Nemotron 3.5 ASR Streaming 0.6B** | multilingual speech → text |
+| ⚙️ Runtime | **CrispASR** | native C++ / GGUF inference |
+| ⚡ Reflex | deterministic router → optional Laya | instant known actions |
+| 🧠 Planner | local OpenAI-compatible endpoint | novel multi-step tasks |
+| 🤖 Harness | Codex / OpenCode / Kilo / Claude / Gemini | heavy agent work |
+
+Nemotron downloads its local Q4_K runtime model on first voice use (~458 MB), then reuses the local cache.
+
+Moonshine remains available as a lightweight fallback.
+
+More details: [docs/STT.md](docs/STT.md)
+
+---
+
+## 🏎️ How it works
+
+```text
+Voice
+  ↓
+local VAD + Nemotron 3.5
+  ↓
+Known command? ── yes ──→ typed native tool ──→ done
+  │
+  no
+  ↓
+Laya / local planner
+  ↓
+tool or AI harness
+```
+
+The generative model is a fallback — **not the main loop**.
+
+---
+
+## 🚀 Run it
+
+Requirements: Node 22+, Rust and the normal Tauri system dependencies.
 
 ```bash
+git clone https://github.com/Maxei6/reflexdesk.git
+cd reflexdesk
 npm install
 npm run dev
 ```
 
-The first Moonshine model load may download its local model pack. After it is cached, the STT path can run offline.
+`npm run dev` prepares a pinned CrispASR runtime for your platform.
 
-You can also type commands into the test bar before STT is ready.
+The first time you activate Nemotron, the model is downloaded to its local cache. After that, the speech path can run offline.
 
-## 🫧 The Reflex
+You can also test commands from the text box before microphone setup finishes.
 
-When listening is active, ReflexDesk shows a transparent **white-particle orb** above your desktop. It moves with microphone energy and changes state while tools or agent harnesses are working.
+---
 
-Press **Command/Ctrl + Shift + Space** at any time to activate or kill listening immediately.
+## 📴 Offline means offline
 
-## 🏎️ Execution path
+In local mode:
 
 ```text
-Voice → local STT → deterministic reflex → tool
-                    ↓ unsure
-                   Laya
-                    ↓ novel
-             local planner / harness
+Microphone      → local
+Speech-to-text  → local
+Intent routing  → local
+Planner         → localhost only
+Desktop tools   → local
+Config/history  → local
 ```
 
-The generative model is a fallback — not the main loop.
+Remote planner endpoints are blocked unless **Hybrid** mode is explicitly enabled.
 
-## 🧪 Current v0.1
+---
 
-The repository now contains a runnable Tauri MVP with:
+## 🤖 Control the agents you already use
 
-- Moonshine WASM streaming STT
-- animated transparent particle overlay
-- global voice toggle
-- deterministic fast command router
-- optional local Laya sidecar
-- local OpenAI-compatible planner bridge
-- automatic local model discovery through `/v1/models`
-- safe native app/browser tools
-- AI harness detection + conservative launch adapter
-- configurable workspace/model/provider settings
-- CI checks and tagged Windows/macOS/Linux installer builds
+ReflexDesk is not trying to replace every coding agent.
 
-See [`docs/MVP.md`](docs/MVP.md) for the exact implemented boundary.
+```text
+"Run Codex on this repo and fix the tests."
+"Open this project in OpenCode."
+"Stop."
+"Show me what changed."
+```
 
-## 🔒 Offline mode
+The v0.1 bridge detects:
 
-Offline means **no AI cloud calls**. Localhost model servers are allowed; remote model endpoints are blocked unless hybrid mode is explicitly enabled.
+**OpenCode · Kilo · Codex · Claude Code · Gemini**
 
-For authenticated OpenAI-compatible endpoints, set `REFLEXDESK_PLANNER_API_KEY` in the app environment instead of storing secrets in browser storage.
+Structured ACP/SDK control is the target. UI scraping is intentionally the last resort.
 
-## 📦 Installers
+---
 
-Tagged releases (`v*`) trigger cross-platform Tauri builds for Windows, macOS, and Linux. Preview builds are intentionally unsigned until signing/notarization is configured.
+## ✅ Already working
+
+- Tauri desktop app
+- transparent always-on-top overlay
+- microphone-reactive particle animation
+- global listen / kill shortcut
+- NVIDIA Nemotron 3.5 local STT path
+- automatic old-CPU fallback runtime on x86-64
+- Moonshine fallback
+- deterministic fast router
+- optional local Laya adapter
+- local / hybrid planner gate
+- safe app + browser tools
+- AI harness detection / launch
+- Windows, macOS and Linux build pipelines
+
+## 🔜 Next
+
+- hardware benchmark + automatic CPU/GPU runtime selection
+- native accessibility trees
+- browser DOM / CDP control
+- full ACP harness adapters
+- reusable learned skills
+- signed / notarized installers
+
+See [docs/MVP.md](docs/MVP.md) for the exact current boundary.
+
+---
+
+## 📦 Build
+
+```bash
+npm run check
+npm run build
+```
+
+GitHub Actions builds preview installers for Windows, macOS and Linux.
+
+---
 
 ## 📜 License
 
-MIT. Third-party model licenses stay with their upstream projects. See `THIRD_PARTY_NOTICES.md` and `models/registry.json`.
+ReflexDesk source code is **MIT**.
+
+Model weights and third-party runtimes keep their own upstream licenses. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and [models/registry.json](models/registry.json).
