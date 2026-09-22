@@ -26,6 +26,8 @@ ReflexDesk does not wake a giant LLM for every click. Known commands take the fa
 
 ### ✨ What makes it different
 
+After first-time setup, ReflexDesk behaves like a system utility: it starts hidden, lives in the tray, prepares the local engine in the background, and only accepts voice once the runtime is genuinely ready.
+
 - ⚡ **Reflex path** — common commands execute without a generative LLM
 - 🎧 **NVIDIA Nemotron 3.5** — local multilingual streaming ASR by default
 - 🫧 **Live particle overlay** — transparent white particles move with your voice
@@ -149,6 +151,12 @@ Structured ACP/SDK control is the target. UI scraping is intentionally the last 
 
 ## ✅ Already working
 
+- first-run language + microphone + real voice readiness test
+- background system-tray lifecycle
+- start-at-login + single-instance protection
+- durable settings + engine watchdog/recovery
+- owned AI-process cleanup on explicit quit
+- authenticated ephemeral localhost STT service
 - Tauri desktop app
 - transparent always-on-top overlay
 - microphone-reactive particle animation
@@ -165,14 +173,14 @@ Structured ACP/SDK control is the target. UI scraping is intentionally the last 
 
 ## 🔜 Next
 
-- hardware benchmark + automatic CPU/GPU runtime selection
+- automatic Windows/Linux CUDA/Vulkan runtime selection after benchmark
 - native accessibility trees
 - browser DOM / CDP control
 - full ACP harness adapters + interrupt / resume
 - reusable learned skills
 - signed / notarized installers
 
-See [docs/MVP.md](docs/MVP.md) for the exact current boundary.
+See [docs/P0.md](docs/P0.md) for the desktop lifecycle/security design and [docs/MVP.md](docs/MVP.md) for the exact current boundary.
 
 ---
 
