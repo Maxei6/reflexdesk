@@ -260,7 +260,26 @@ async function setupAudio() {
     },
   });
 
+  for (const track of stream.getAudioTracks()) {
+    track.addEventListener("ended", async function () {
+      if (!active) return;
+      setVisualState("error", "Microphone disconnected");
+      try {
+        await emit("reflexdesk://attention", {
+          kind: "microphone_disconnected",
+          message: "Your microphone disconnected. Reconnect it and start listening again.",
+        });
+        await invoke("set_listening", { active: false });
+      } catch {}
+    });
+  }
+
   const context = new AudioContext();
+  context.onstatechange = function () {
+    if (active && context.state === "suspended") {
+      context.resume().catch(function () {});
+    }
+  };
   await context.resume();
   await context.audioWorklet.addModule("/audio-worklet.js");
 
