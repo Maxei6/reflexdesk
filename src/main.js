@@ -168,7 +168,18 @@ function renderRuntime(next) {
   engineReady = Boolean(next && next.ready);
 
   if (!settings || !settings.setup_complete) {
-    if (engineReady) unlockVoiceTest();
+    if (engineReady) {
+      unlockVoiceTest();
+    } else if (next && next.phase === "error") {
+      onboardingTesting = false;
+      setSetupBusy(false, next.last_error || "The local engine could not start.");
+      $("voiceTestStatus").textContent = "Fix the issue above, then retry setup.";
+      $("testVoice").disabled = true;
+      setupOrb.setState("error");
+    } else if (next && next.phase === "degraded") {
+      setSetupBusy(true, next.last_error || "Recovering the local engine…");
+      setupOrb.setState("warning");
+    }
     return;
   }
 
