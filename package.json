@@ -5,13 +5,14 @@
   "description": "Instant local voice control for your computer and AI agents.",
   "type": "module",
   "scripts": {
-    "dev": "npm run prepare:icons && tauri dev",
-    "build": "npm run prepare:icons && tauri build",
+    "dev": "npm run prepare:icons && npm run prepare:stt && tauri dev",
+    "build": "npm run prepare:icons && npm run prepare:stt && tauri build",
     "web:dev": "vite --host 127.0.0.1 --port 1420",
     "web:build": "vite build",
     "test": "node --test tests/*.test.mjs",
     "check": "node scripts/validate.mjs && npm test",
-    "prepare:icons": "tauri icon assets/reflexdesk-icon.svg"
+    "prepare:icons": "tauri icon assets/reflexdesk-icon.svg",
+    "prepare:stt": "node scripts/prepare-stt-runtime.mjs"
   },
   "dependencies": {
     "@moonshine-ai/moonshine-wasm": "^0.1.5",
