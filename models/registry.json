@@ -3,16 +3,27 @@
   "selection_policy": {
     "prefer_offline": true,
     "benchmark_before_select": true,
-    "minimum_tool_correctness": null
+    "minimum_tool_correctness": null,
+    "stt_default": "nemotron-3.5-asr-streaming-0.6b"
   },
   "models": [
+    {
+      "id": "nemotron-3.5-asr-streaming-0.6b",
+      "role": "stt",
+      "upstream": "nvidia/nemotron-3.5-asr-streaming-0.6b",
+      "runtime": "CrispASR v0.8.35",
+      "runtime_model": "cstr/nemotron-3.5-asr-streaming-GGUF / Q4_K",
+      "approximate_download_mb": 458,
+      "license": "OpenMDW-1.1",
+      "status": "default"
+    },
     {
       "id": "moonshine-medium-streaming",
       "role": "stt",
       "upstream": "moonshine-ai/moonshine",
       "runtime": "@moonshine-ai/moonshine-wasm",
-      "license": "MIT for current streaming models; verify exact checkpoint",
-      "status": "default-candidate"
+      "license": "verify exact checkpoint",
+      "status": "fallback"
     },
     {
       "id": "laya-english",
@@ -34,7 +45,11 @@
       "id": "local-openai-compatible",
       "role": "planner",
       "runtime": "localhost-http",
-      "examples": ["llama.cpp", "Ollama", "LM Studio"],
+      "examples": [
+        "llama.cpp",
+        "Ollama",
+        "LM Studio"
+      ],
       "status": "supported-interface"
     },
     {
