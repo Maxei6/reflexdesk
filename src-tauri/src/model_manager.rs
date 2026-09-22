@@ -85,6 +85,8 @@ pub struct ModelArtifact {
     #[serde(default)]
     pub role: Option<String>,
     #[serde(default)]
+    pub tier: Option<String>,
+    #[serde(default)]
     pub upstream: String,
     #[serde(default)]
     pub revision: Option<String>,
