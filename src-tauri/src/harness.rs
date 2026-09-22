@@ -1,7 +1,6 @@
+use crate::process_supervisor::{OwnershipClass, ProcessSpec, ProcessSupervisor};
 use serde::Serialize;
 use std::process::Command;
-use crate::process_supervisor::ProcessSupervisor;
-
 #[derive(Serialize)]
 pub struct HarnessStatus {
     pub name: &'static str,
@@ -32,6 +31,12 @@ pub fn detect_all() -> Vec<HarnessStatus> {
 }
 
 pub fn launch(harness: &str, prompt: &str, cwd: Option<&str>, supervisor: &ProcessSupervisor) -> Result<(), String> {
+    let _ = launch_session(harness, prompt, cwd, supervisor)?;
+    Ok(())
+}
+
+/// Launches an agent harness as an `OwnedSession` process and returns a stable `hs_<8-hex>` session label.
+pub fn launch_session(harness: &str, prompt: &str, cwd: Option<&str>, supervisor: &ProcessSupervisor) -> Result<String, String> {
     let exe = match harness.to_lowercase().as_str() {
         "opencode" => "opencode",
         "kilo" => "kilo",
@@ -44,18 +49,19 @@ pub fn launch(harness: &str, prompt: &str, cwd: Option<&str>, supervisor: &Proce
         return Err(format!("{exe} is not installed or not on PATH"));
     }
 
-    let mut child = Command::new(exe);
+    let mut spec = ProcessSpec::new(exe, OwnershipClass::OwnedSession);
     if let Some(dir) = cwd.filter(|v| !v.trim().is_empty()) {
-        child.current_dir(dir);
+        spec = spec.cwd(dir);
     }
 
     // Only Codex prompt injection is enabled in v0.1 because its structured
     // CLI contract is verified. Other harnesses launch conservatively until
     // their ACP/SDK adapter is implemented.
     if !prompt.is_empty() && exe == "codex" {
-        child.arg("exec").arg(prompt);
+        spec = spec.arg("exec").arg(prompt);
     }
-    let child = child.spawn().map_err(|e| e.to_string())?;
-    let label = format!("harness:{exe}:{}", child.id());
-    supervisor.track(label, child)
+
+    let proc_id = supervisor.spawn(spec)?;
+    let session_label = format!("hs_{:08x}", (proc_id.raw() & 0xffff_ffff) as u32);
+    Ok(session_label)
 }
