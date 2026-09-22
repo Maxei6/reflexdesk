@@ -90,6 +90,20 @@ impl TranscriptGate {
         now_secs().saturating_sub(entry.issued_at_secs) < NONCE_TTL_SECS
     }
 
+    /// Check whether a nonce is currently valid without consuming it.
+    /// Used for gating intermediate streaming chunks/partials to the authenticated overlay session.
+    pub fn is_nonce_valid(&self, nonce: &str) -> bool {
+        let guard = match self.nonces.lock() {
+            Ok(g) => g,
+            Err(_) => return false,
+        };
+        if let Some(entry) = guard.get(nonce) {
+            now_secs().saturating_sub(entry.issued_at_secs) < NONCE_TTL_SECS
+        } else {
+            false
+        }
+    }
+
     /// Validate + emit. Returns the verified payload on success.
     pub fn submit(
         &self,
@@ -137,5 +151,16 @@ mod tests {
         assert!(gate.consume_nonce(&n));
         assert!(!gate.consume_nonce(&n));
         assert!(!gate.consume_nonce("tn_bogus"));
+    }
+
+    #[test]
+    fn nonce_valid_without_consuming() {
+        let gate = TranscriptGate::default();
+        let n = gate.issue_nonce();
+        assert!(gate.is_nonce_valid(&n));
+        assert!(gate.is_nonce_valid(&n)); // still valid after checking
+        assert!(!gate.is_nonce_valid("tn_bogus"));
+        assert!(gate.consume_nonce(&n));
+        assert!(!gate.is_nonce_valid(&n)); // invalid after consume
     }
 }

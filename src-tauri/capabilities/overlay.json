@@ -18,6 +18,7 @@
     "core:window:allow-outer-size",
     "allow-stt-transcribe",
     "allow-transcript-nonce",
-    "allow-submit-transcript"
+    "allow-submit-transcript",
+    "allow-stt-stream"
   ]
 }

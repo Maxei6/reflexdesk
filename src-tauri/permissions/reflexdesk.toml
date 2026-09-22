@@ -65,3 +65,28 @@ commands.allow = ["get_browser_status"]
 identifier = "allow-browser-pairing-secret"
 description = "Retrieve the active browser pairing secret (main window only)."
 commands.allow = ["get_browser_pairing_secret"]
+
+[[permission]]
+identifier = "allow-stt-stream"
+description = "Stream audio chunks and cancel active streaming sessions (overlay window only)."
+commands.allow = ["stt_stream_chunk", "stt_cancel_stream", "stt_baseline_metrics"]
+
+[[permission]]
+identifier = "allow-hardware-profile"
+description = "Inspect detected hardware profile (main window only)."
+commands.allow = ["get_hardware_profile"]
+
+[[permission]]
+identifier = "allow-hardware-benchmark"
+description = "Inspect and run empirical hardware benchmarks and overrides (main window only)."
+commands.allow = ["get_benchmark_report", "run_hardware_benchmark", "set_backend_override"]
+
+[[permission]]
+identifier = "allow-diagnostics-preview"
+description = "Fetch sanitized diagnostics bundle for preview (main window only)."
+commands.allow = ["get_diagnostics_preview"]
+
+[[permission]]
+identifier = "allow-diagnostics-export"
+description = "Export sanitized diagnostics bundle to disk (main window only)."
+commands.allow = ["export_diagnostics"]

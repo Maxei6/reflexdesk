@@ -16,6 +16,15 @@ fn main() {
             "get_desktop_health",
             "get_browser_status",
             "get_browser_pairing_secret",
+            "stt_stream_chunk",
+            "stt_cancel_stream",
+            "stt_baseline_metrics",
+            "get_hardware_profile",
+            "get_benchmark_report",
+            "run_hardware_benchmark",
+            "set_backend_override",
+            "get_diagnostics_preview",
+            "export_diagnostics",
         ])),
     )
     .unwrap();

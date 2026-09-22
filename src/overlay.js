@@ -210,12 +210,29 @@ function finalizeNemotronUtterance() {
     setVisualState("transcribing");
 
     try {
-      const result = await invoke("stt_transcribe", {
-        samples: samples,
-        sampleRate: TARGET_RATE,
-        language: voice.language || "auto",
-      });
-
+      let result = null;
+      try {
+        const nonce = await invoke("transcript_nonce");
+        const streamResult = await invoke("stt_stream_chunk", {
+          sessionId: overlaySession(),
+          nonce: nonce,
+          samples: samples,
+          sampleRate: TARGET_RATE,
+          language: voice.language || "auto",
+          partialHint: null,
+          isFinal: true,
+        });
+        if (streamResult && streamResult.transcript) {
+          result = streamResult.transcript;
+        }
+      } catch {
+        // Fallback directly to HTTP utterance path
+        result = await invoke("stt_transcribe", {
+          samples: samples,
+          sampleRate: TARGET_RATE,
+          language: voice.language || "auto",
+        });
+      }
       if (!active) return;
 
       const text = String(result && result.text ? result.text : "").trim();
@@ -342,6 +359,9 @@ async function teardownAudio() {
   for (const track of audio.stream.getTracks()) track.stop();
 
   try { await audio.context.close(); } catch {}
+  try {
+    invoke("stt_cancel_stream", { sessionId: overlaySession() }).catch(function () {});
+  } catch {}
   audio = null;
 }
 
@@ -529,4 +549,16 @@ listen("reflexdesk://visual-state", function (event) {
       : "";
 
   setVisualState(state, message);
+});
+
+listen("reflexdesk://stt-partial", function (event) {
+  if (!active) return;
+  const payload = event.payload;
+  if (payload && payload.text) {
+    partial.textContent = payload.text;
+    root.classList.add("show-caption");
+    if (payload.speculative_action) {
+      orb.setState("thinking");
+    }
+  }
 });

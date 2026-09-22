@@ -1,4 +1,6 @@
 mod harness;
+pub mod benchmark;
+pub mod hardware;
 pub mod desktop;
 pub mod reflex;
 pub mod planner;
@@ -7,10 +9,11 @@ mod lifecycle;
 mod model_manager;
 mod policy;
 mod process;
+pub mod observability;
 mod process_supervisor;
-mod redaction;
-mod security;
-mod settings;
+ mod redaction;
+pub mod secrets;
+ mod settings;
 mod stt;
 mod tools;
 mod transcript;
@@ -52,10 +55,16 @@ fn update_runtime(
     phase: Phase,
     error: Option<String>,
 ) -> Result<RuntimeSnapshot, String> {
+    let sanitized_error = error.map(|e| redaction::redact_error(&e));
     let runtime = app.state::<RuntimeState>();
-    let snapshot = runtime.transition(phase, error)?;
+    let snapshot = runtime.transition(phase, sanitized_error.clone())?;
     tray::update(app, &snapshot);
     let _ = app.emit("reflexdesk://state", &snapshot);
+    observability::log_lifecycle(
+        &format!("{:?}", phase).to_lowercase(),
+        if sanitized_error.is_some() { "error" } else { "ok" },
+        sanitized_error.as_deref(),
+    );
     Ok(snapshot)
 }
 
@@ -402,27 +411,53 @@ fn repair_model(app: AppHandle, model_mgr: State<'_, ModelManager>) -> Result<St
 
 #[tauri::command]
 fn get_system_profile() -> SystemProfile {
-    let acceleration_hint = if cfg!(target_os = "macos") {
-        "Metal-capable native runtime".to_string()
-    } else if Command::new("nvidia-smi")
-        .arg("--help")
-        .output()
-        .map(|output| output.status.success())
-        .unwrap_or(false)
-    {
-        "NVIDIA GPU detected; portable runtime active in this build".to_string()
+    let profile = hardware::detect_hardware_profile();
+    let cached = benchmark::get_cached_benchmark();
+
+    let acceleration_hint = if let Some(report) = cached {
+        if let Some(selected) = &report.selected_candidate_id {
+            format!("Empirical benchmark active: {selected}")
+        } else {
+            "Benchmarked (no active candidate)".to_string()
+        }
+    } else if profile.metal {
+        "Metal-capable native runtime detected".to_string()
+    } else if profile.cuda {
+        "NVIDIA CUDA GPU detected; empirical benchmark recommended".to_string()
+    } else if profile.vulkan {
+        "Vulkan compute detected; empirical benchmark recommended".to_string()
+    } else if profile.cpu_features.iter().any(|f| f == "avx2") {
+        "AVX2 vector-accelerated CPU runtime".to_string()
     } else {
-        "Portable CPU runtime".to_string()
+        "Portable legacy CPU runtime".to_string()
     };
 
     SystemProfile {
         os: std::env::consts::OS,
         arch: std::env::consts::ARCH,
-        logical_cpus: std::thread::available_parallelism()
-            .map(|value| value.get())
-            .unwrap_or(1),
+        logical_cpus: profile.logical_cores,
         acceleration_hint,
     }
+}
+
+#[tauri::command]
+fn get_hardware_profile() -> hardware::HardwareProfile {
+    hardware::detect_hardware_profile()
+}
+
+#[tauri::command]
+fn get_benchmark_report() -> Option<benchmark::BenchmarkReport> {
+    benchmark::get_cached_benchmark()
+}
+
+#[tauri::command]
+fn run_hardware_benchmark(timeout_secs: Option<u64>) -> Result<benchmark::BenchmarkReport, String> {
+    benchmark::run_benchmark(timeout_secs)
+}
+
+#[tauri::command]
+fn set_backend_override(candidate_id: Option<String>) -> Result<Option<String>, String> {
+    benchmark::set_backend_override(candidate_id)
 }
 
 #[tauri::command]
@@ -447,21 +482,38 @@ fn execute_verified(
     envelope: &policy::ActionEnvelope,
     raw_text: Option<&str>,
 ) -> policy::ActionExecutionResult {
-    let denied = |reason: String| policy::ActionExecutionResult {
-        status: "deny".into(),
-        output: None,
-        verification: None,
-        confirmation_id: None,
-        tool: Some(envelope.tool.clone()),
-        risk: Some(envelope.risk),
-        args_summary: None,
-        reason: Some(reason),
+    let denied = |reason: String| {
+        let redacted_reason = redaction::redact_error(&reason);
+        observability::log_tool(
+            &envelope.tool,
+            "deny",
+            None,
+            Some(&envelope.session_id),
+            Some(&redacted_reason),
+        );
+        policy::ActionExecutionResult {
+            status: "deny".into(),
+            output: None,
+            verification: None,
+            confirmation_id: None,
+            tool: Some(envelope.tool.clone()),
+            risk: Some(envelope.risk),
+            args_summary: None,
+            reason: Some(redacted_reason),
+        }
     };
 
     // 1. Policy decision: validation, negation, authorization, pre-cancel.
     let sanitized_args = match policy::decide_and_prepare_with_settings(envelope, raw_text, settings) {
         policy::PolicyDecision::Denied { reason } => return denied(reason),
         policy::PolicyDecision::NeedConfirm { confirmation_id, tool, risk, args_summary } => {
+            observability::log_tool(
+                &envelope.tool,
+                "confirm",
+                None,
+                Some(&envelope.session_id),
+                None,
+            );
             return policy::ActionExecutionResult {
                 status: "confirm".into(),
                 output: None,
@@ -495,12 +547,20 @@ fn execute_verified(
     let tool_res = match tools::execute(&envelope.tool, &sanitized_args, supervisor) {
         Ok(res) => res,
         Err(err) => {
+            let redacted_err = redaction::redact_error(&err);
             let _ = app.emit(
                 "reflexdesk://visual-state",
-                serde_json::json!({ "state": "error", "message": &err }),
+                serde_json::json!({ "state": "error", "message": &redacted_err }),
             );
             settle(app, was_listening);
-            let mut res = denied(err);
+            observability::log_tool(
+                &envelope.tool,
+                "error",
+                None,
+                Some(&envelope.session_id),
+                Some(&redacted_err),
+            );
+            let mut res = denied(redacted_err);
             res.status = "error".into();
             return res;
         }
@@ -527,6 +587,7 @@ fn execute_verified(
     }
 
     let _ = app.emit("reflexdesk://visual-state", "success");
+    observability::log_tool(&envelope.tool, "success", None, Some(&envelope.session_id), None);
     settle(app, was_listening);
     policy::ActionExecutionResult {
         status: "success".into(),
@@ -640,11 +701,11 @@ fn laya_route(
 
     let result = req
         .send()
-        .map_err(|e| e.to_string())
+        .map_err(|e| redaction::redact_error(&e.to_string()))
         .and_then(|response| {
             response
                 .json::<serde_json::Value>()
-                .map_err(|e| e.to_string())
+                .map_err(|e| redaction::redact_error(&e.to_string()))
         });
 
     let _ = update_runtime(
@@ -709,12 +770,27 @@ fn planner_route(
     let _ = update_runtime(&app, Phase::Routing, None);
     let _ = app.emit("reflexdesk://visual-state", "thinking");
 
-    let planner_adapter = planner::OpenAiCompatibleLocalPlanner::new(
+    let secret_bytes = app
+        .state::<SettingsState>()
+        .snapshot()
+        .planner_secret_ref
+        .as_ref()
+        .and_then(|sref| {
+            app.state::<secrets::AppSecretStore>()
+                .0
+                .get(sref)
+                .ok()
+                .map(std::sync::Arc::new)
+        });
+
+    let mut planner_adapter = planner::OpenAiCompatibleLocalPlanner::new(
         endpoint,
         model,
         persisted_allow_online,
     );
-    let req = planner::PlannerRequest::new("planner-route-session", text, allow_remote);
+    if let Some(key) = secret_bytes {
+        planner_adapter = planner_adapter.with_api_key(Some(key));
+    }
     let ctx = planner::PlannerContext::default();
 
     let result = (|| -> Result<serde_json::Value, String> {
@@ -744,9 +820,18 @@ fn planner_route(
 #[tauri::command]
 fn planner_health(app: AppHandle) -> bool {
     let settings = app.state::<SettingsState>().snapshot();
-    let service = planner::PlannerService::new(&settings);
+    let secret_bytes = settings
+        .planner_secret_ref
+        .as_ref()
+        .and_then(|sref| {
+            app.state::<secrets::AppSecretStore>()
+                .0
+                .get(sref)
+                .ok()
+                .map(std::sync::Arc::new)
+        });
+    let service = planner::PlannerService::new_with_secret(&settings, secret_bytes);
     service.health()
-}
 
 #[tauri::command]
 fn planner_status(app: AppHandle) -> planner::PlannerStatus {
@@ -758,8 +843,154 @@ fn planner_status(app: AppHandle) -> planner::PlannerStatus {
 #[tauri::command]
 fn detect_harnesses() -> Vec<harness::HarnessStatus> {
     harness::detect_all()
+ }
+
+#[tauri::command]
+fn connect_provider(
+    app: AppHandle,
+    provider: String,
+    api_key: String,
+) -> Result<secrets::ProviderConnectionStatus, String> {
+    if api_key.trim().is_empty() {
+        return Err("API key cannot be empty".into());
+    }
+
+    let secret_store = app.state::<secrets::AppSecretStore>();
+    let sref = secret_store.0.set(&provider, api_key.as_bytes())?;
+
+    let settings_state = app.state::<SettingsState>();
+    let mut current = settings_state.snapshot();
+    current.planner_secret_ref = Some(sref.clone());
+    settings::save(&app, &current)?;
+    settings_state.replace(current.clone())?;
+
+    let _ = app.emit("reflexdesk://settings", &current);
+
+    let secret_bytes = secret_store.0.get(&sref)?;
+    let status = secrets::test_provider_connection(
+        &current.planner_endpoint,
+        &secret_bytes,
+        current.allow_online_ai,
+    );
+
+    Ok(secrets::ProviderConnectionStatus {
+        provider,
+        connected: status.last_status != "auth-invalid",
+        secret_id: Some(sref.id),
+        updated_at_ts: Some(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0),
+        ),
+        last_status: status.last_status,
+        message: status.message,
+    })
 }
 
+#[tauri::command]
+fn test_provider(
+    app: AppHandle,
+    provider: String,
+) -> Result<secrets::ProviderConnectionStatus, String> {
+    let settings = app.state::<SettingsState>().snapshot();
+    let sref = match &settings.planner_secret_ref {
+        Some(r) => r.clone(),
+        None => {
+            return Ok(secrets::ProviderConnectionStatus {
+                provider,
+                connected: false,
+                secret_id: None,
+                updated_at_ts: None,
+                last_status: "disconnected".into(),
+                message: "No provider credentials configured in SecretStore".into(),
+            });
+        }
+    };
+
+    let secret_store = app.state::<secrets::AppSecretStore>();
+    let secret_bytes = secret_store.0.get(&sref)?;
+    let status = secrets::test_provider_connection(
+        &settings.planner_endpoint,
+        &secret_bytes,
+        settings.allow_online_ai,
+    );
+
+    Ok(secrets::ProviderConnectionStatus {
+        provider,
+        connected: status.last_status != "auth-invalid",
+        secret_id: Some(sref.id),
+        updated_at_ts: Some(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0),
+        ),
+        last_status: status.last_status,
+        message: status.message,
+    })
+}
+
+#[tauri::command]
+fn disconnect_provider(
+    app: AppHandle,
+    provider: String,
+) -> Result<secrets::ProviderConnectionStatus, String> {
+    let settings_state = app.state::<SettingsState>();
+    let mut current = settings_state.snapshot();
+
+    if let Some(sref) = current.planner_secret_ref.take() {
+        let secret_store = app.state::<secrets::AppSecretStore>();
+        let _ = secret_store.0.delete(&sref);
+        settings::save(&app, &current)?;
+        settings_state.replace(current.clone())?;
+        let _ = app.emit("reflexdesk://settings", &current);
+    }
+
+    Ok(secrets::ProviderConnectionStatus {
+        provider,
+        connected: false,
+        secret_id: None,
+        updated_at_ts: None,
+        last_status: "disconnected".into(),
+        message: "Provider disconnected and secret deleted from vault".into(),
+    })
+}
+
+#[tauri::command]
+fn get_provider_status(
+    app: AppHandle,
+    provider: String,
+) -> Result<secrets::ProviderConnectionStatus, String> {
+    let settings = app.state::<SettingsState>().snapshot();
+    let secret_id = settings.planner_secret_ref.as_ref().map(|r| r.id.clone());
+    let connected = secret_id.is_some();
+
+    Ok(secrets::ProviderConnectionStatus {
+        provider,
+        connected,
+        secret_id,
+        updated_at_ts: None,
+        last_status: if connected {
+            "connected".into()
+        } else {
+            "disconnected".into()
+        },
+        message: if connected {
+            "Provider credentials configured in vault".into()
+        } else {
+            "No credentials stored".into()
+        },
+    })
+}
+
+#[tauri::command]
+fn list_secret_metadata(
+    app: AppHandle,
+) -> Result<Vec<secrets::SecretMetadata>, String> {
+    let secret_store = app.state::<secrets::AppSecretStore>();
+    secret_store.0.list_metadata()
+}
 #[tauri::command]
 fn stt_status(
     app: AppHandle,
@@ -799,6 +1030,47 @@ fn stt_shutdown(state: State<'_, stt::SttState>) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn stt_stream_chunk(
+    app: AppHandle,
+    state: State<'_, stt::SttState>,
+    session_id: String,
+    nonce: String,
+    samples: Vec<i16>,
+    sample_rate: u32,
+    language: String,
+    partial_hint: Option<String>,
+    is_final: bool,
+) -> Result<stt::StreamChunkResult, String> {
+    stt::stream_chunk(
+        &app,
+        &state,
+        session_id,
+        nonce,
+        samples,
+        sample_rate,
+        language,
+        partial_hint,
+        is_final,
+    )
+}
+
+#[tauri::command]
+fn stt_cancel_stream(
+    app: AppHandle,
+    state: State<'_, stt::SttState>,
+    session_id: String,
+) -> Result<(), String> {
+    stt::cancel_stream(&app, &state, &session_id)
+}
+
+#[tauri::command]
+fn stt_baseline_metrics(
+    state: State<'_, stt::SttState>,
+) -> stt::native::SttBaselineMetrics {
+    stt::baseline_metrics(&state)
+}
+
+#[tauri::command]
 fn transcript_nonce(gate: State<'_, transcript::TranscriptGate>) -> String {
     gate.issue_nonce()
 }
@@ -827,6 +1099,19 @@ fn open_settings(app: AppHandle) {
 fn quit_app(app: AppHandle) {
     shutdown_and_exit(&app);
 }
+#[tauri::command]
+fn get_diagnostics_preview(app: AppHandle) -> Result<observability::DiagnosticsBundle, String> {
+    Ok(observability::get_diagnostics_preview(&app))
+}
+
+#[tauri::command]
+fn export_diagnostics(
+    app: AppHandle,
+    path: Option<String>,
+) -> Result<observability::DiagnosticsBundle, String> {
+    observability::export_diagnostics(&app, path.map(std::path::PathBuf::from))
+}
+
 
 pub fn run() {
     tauri::Builder::default()
@@ -870,6 +1155,15 @@ pub fn run() {
             let model_mgr = ModelManager::default_manager()
                 .map_err(|e| format!("failed to initialize ModelManager: {e}"))?;
             app.manage(model_mgr);
+
+            let vault_dir = app
+                .path()
+                .app_config_dir()
+                .map(|p| p.join("vault"))
+                .unwrap_or_else(|_| std::path::PathBuf::from("vault"));
+            let vault_store = secrets::OsVaultSecretStore::new(vault_dir)
+                .map_err(|e| format!("failed to initialize OsVaultSecretStore: {e}"))?;
+            app.manage(secrets::AppSecretStore::new(std::sync::Arc::new(vault_store)));
 
             tray::setup(app)?;
 
@@ -949,8 +1243,21 @@ pub fn run() {
             transcript_nonce,
             submit_transcript,
             open_settings,
-            quit_app
+            stt_stream_chunk,
+            stt_cancel_stream,
+            stt_baseline_metrics,
+            get_diagnostics_preview,
+            export_diagnostics,
+            quit_app,
+            get_hardware_profile,
+            get_benchmark_report,
+            run_hardware_benchmark,
+            set_backend_override,
+            connect_provider,
+            test_provider,
+            disconnect_provider,
+            get_provider_status,
+            list_secret_metadata,
         ])
-        .run(tauri::generate_context!())
         .expect("error while running ReflexDesk");
 }
