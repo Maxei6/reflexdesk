@@ -273,7 +273,7 @@ async function startVoiceTest() {
     onboardingTesting = true;
     testStartedAt = performance.now();
     $("testVoice").disabled = true;
-    $("voiceTestStatus").textContent = "Say something like “Hello ReflexDesk”.";
+    $("voiceTestStatus").textContent = "Say exactly: “Hello ReflexDesk”.";
     setupOrb.setState("listening");
     await invoke("set_listening", { active: true });
   } catch (error) {
@@ -285,6 +285,15 @@ async function startVoiceTest() {
 }
 
 async function passVoiceTest(payload) {
+  const heard = String(payload && payload.text ? payload.text : "").trim();
+  const route = routeFast(heard);
+
+  if (!(route.kind === "control" && route.action === "reflex.ping")) {
+    $("voiceTestStatus").textContent = "I heard “" + heard.slice(0, 70) + "”. Try again and say: “Hello ReflexDesk”.";
+    setupOrb.setState("warning");
+    return;
+  }
+
   onboardingTesting = false;
 
   try {
@@ -300,7 +309,7 @@ async function passVoiceTest(payload) {
 
   setupOrb.setState("success");
   $("voiceTestStatus").textContent =
-    "Heard: “" + String(payload && payload.text ? payload.text : "").slice(0, 80) + "”";
+    "Heard: “" + heard.slice(0, 80) + "”";
   $("setupDone").classList.remove("hidden");
   $("benchmarkText").textContent = "Local speech passed in about " + benchmarkMs + " ms.";
   $("finishSetup").focus();
@@ -402,8 +411,10 @@ async function dispatchText(text) {
 
   const route = routeFast(cleanText);
 
-  if (route.kind === "control" && route.action === "voice.stop") {
-    await invoke("set_listening", { active: false });
+  if (route.kind === "control") {
+    if (route.action === "voice.stop") {
+      await invoke("set_listening", { active: false });
+    }
     return;
   }
 
