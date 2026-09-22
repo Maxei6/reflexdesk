@@ -31,3 +31,12 @@ The active-listening indicator is a semi-transparent, always-on-top reactive ove
 - Permissions: deterministic policy engine
 
 Keep modules small, interfaces explicit, and dependencies minimal.
+
+
+## Planning authority
+- P0 implementation truth lives in `docs/P0.md` and `docs/MVP.md`.
+- Work beyond P0 is governed by `docs/plans/README.md` plus the relevant numbered plan.
+- Before changing a subsystem covered by a numbered plan, read that plan and preserve its invariants.
+- Update the plan status and acceptance notes when implementation materially changes.
+- Do not mark a plan DONE until its Definition of done and required tests pass.
+- When plans conflict, `docs/plans/00_MASTER_ROADMAP.md` and these root instructions take precedence.
