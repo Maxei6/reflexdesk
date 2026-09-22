@@ -1,0 +1,22 @@
+[package]
+name = "reflexdesk"
+version = "0.1.0"
+description = "Instant local voice control for desktop computers and AI agents"
+authors = ["ReflexDesk contributors"]
+edition = "2021"
+license = "MIT"
+
+[lib]
+name = "reflexdesk_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["macos-private-api"] }
+tauri-plugin-global-shortcut = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+urlencoding = "2"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }

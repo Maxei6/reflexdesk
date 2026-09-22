@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#050505" />
+    <title>ReflexDesk</title>
+    <script type="module" src="/src/main.js"></script>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <div class="eyebrow">REFLEXDESK</div>
+          <h1>Your computer, with reflexes.</h1>
+        </div>
+        <button id="masterToggle" class="master" aria-pressed="false">
+          <span class="dot"></span><span id="masterLabel">Off</span>
+        </button>
+      </header>
+
+      <section class="hero-panel">
+        <div class="orb-mini" aria-hidden="true"><canvas id="miniOrb"></canvas></div>
+        <div class="hero-copy">
+          <div id="statusLine" class="status-line">Ready. Offline by default.</div>
+          <div id="transcript" class="transcript">Press <kbd>Ctrl/Cmd</kbd> + <kbd>Shift</kbd> + <kbd>Space</kbd> or toggle above.</div>
+        </div>
+      </section>
+
+      <section class="grid">
+        <article class="card">
+          <div class="card-title"><span>🎧</span> Voice</div>
+          <label>STT provider
+            <select id="sttProvider">
+              <option value="moonshine">Moonshine (local)</option>
+              <option value="manual">Manual test mode</option>
+            </select>
+          </label>
+          <label>Language
+            <select id="language">
+              <option value="en">English</option>
+              <option value="es">Spanish</option>
+              <option value="zh">Mandarin Chinese</option>
+              <option value="ja">Japanese</option>
+              <option value="ko">Korean</option>
+              <option value="vi">Vietnamese</option>
+              <option value="uk">Ukrainian</option>
+              <option value="ar">Arabic</option>
+            </select>
+          </label>
+          <p class="hint">Moonshine downloads its language model on first load, then reuses the local cache offline. More multilingual STT adapters are planned.</p>
+        </article>
+
+        <article class="card">
+          <div class="card-title"><span>⚡</span> Reflex</div>
+          <label>Fast router
+            <select id="reflexProvider">
+              <option value="deterministic">Deterministic fast path</option>
+              <option value="laya">Laya sidecar</option>
+            </select>
+          </label>
+          <label>Laya endpoint
+            <input id="layaEndpoint" value="http://127.0.0.1:8787" />
+          </label>
+          <p class="hint">Simple commands never need the planner. Laya can classify ambiguous known actions locally.</p>
+        </article>
+
+        <article class="card">
+          <div class="card-title"><span>🧠</span> Planner</div>
+          <label>Mode
+            <select id="plannerMode">
+              <option value="local">Local only</option>
+              <option value="hybrid">Hybrid / online fallback</option>
+            </select>
+          </label>
+          <label>OpenAI-compatible endpoint
+            <input id="plannerEndpoint" value="http://127.0.0.1:11434/v1/chat/completions" />
+          </label>
+          <label>Model
+            <input id="plannerModel" value="auto" />
+          </label>
+        </article>
+
+        <article class="card">
+          <div class="card-title"><span>🤖</span> Harnesses</div>
+          <div id="harnessList" class="harness-list"><span class="muted">Detecting…</span></div>
+          <label>Default project folder
+            <input id="workspace" placeholder="/path/to/project" />
+          </label>
+          <button id="refreshHarnesses" class="secondary">Refresh</button>
+          <p class="hint">Detected CLIs can be launched in the selected project folder. Structured ACP adapters come next.</p>
+        </article>
+      </section>
+
+      <section class="test-console">
+        <input id="commandInput" placeholder='Try: “open spotify”, “search for local AI models”, “open https://github.com”' />
+        <button id="runCommand">Run</button>
+      </section>
+
+      <footer>
+        <span id="modeBadge" class="badge">📴 Offline</span>
+        <span class="muted">Global toggle: Ctrl/Cmd + Shift + Space</span>
+      </footer>
+    </main>
+  </body>
+</html>

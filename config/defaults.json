@@ -2,31 +2,28 @@
   "mode": "offline",
   "voice": {
     "enabled": true,
-    "push_to_talk": false,
-    "shortcut": {
-      "windows_linux": "Ctrl+Shift+Space",
-      "macos": "Cmd+Shift+Space"
-    },
-    "stt_provider": "auto"
+    "stt_provider": "moonshine",
+    "language": "en",
+    "shortcut": "CommandOrControl+Shift+Space",
+    "push_to_talk": false
   },
   "overlay": {
     "enabled": true,
-    "opacity": 0.72,
+    "opacity": 0.82,
+    "particle_style": "white-dots",
     "click_through": true,
-    "position": "bottom-center",
     "reactive_to_voice": true
   },
   "reflex": {
-    "provider": "laya",
-    "model": "auto"
+    "provider": "deterministic",
+    "fallback": "laya",
+    "laya_endpoint": "http://127.0.0.1:8787"
   },
   "planner": {
-    "provider": "auto",
+    "provider": "openai-compatible-local",
+    "endpoint": "http://127.0.0.1:11434/v1/chat/completions",
     "model": "auto",
     "load_policy": "on-demand"
-  },
-  "harness": {
-    "default": "auto"
   },
   "privacy": {
     "cloud_ai_allowed": false,

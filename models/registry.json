@@ -3,51 +3,45 @@
   "selection_policy": {
     "prefer_offline": true,
     "benchmark_before_select": true,
-    "minimum_tool_correctness": null,
-    "notes": "Threshold will be set only after ReflexDesk's reproducible task benchmark exists."
+    "minimum_tool_correctness": null
   },
   "models": [
+    {
+      "id": "moonshine-medium-streaming",
+      "role": "stt",
+      "upstream": "moonshine-ai/moonshine",
+      "runtime": "@moonshine-ai/moonshine-wasm",
+      "license": "MIT for current streaming models; verify exact checkpoint",
+      "status": "default-candidate"
+    },
     {
       "id": "laya-english",
       "role": "reflex",
       "upstream": "convaiinnovations/laya",
-      "variant": "english",
+      "runtime": "python-sidecar",
       "license": "Apache-2.0",
-      "status": "candidate",
-      "bundle": false
+      "status": "optional"
     },
     {
       "id": "laya-multilingual",
       "role": "reflex",
       "upstream": "convaiinnovations/laya",
-      "variant": "multilingual",
+      "runtime": "python-sidecar",
       "license": "Apache-2.0",
-      "status": "candidate",
-      "bundle": false
+      "status": "optional"
     },
     {
-      "id": "moonshine",
-      "role": "stt",
-      "upstream": "moonshine-ai/moonshine",
-      "license": "VERIFY_PER_CHECKPOINT",
-      "status": "candidate",
-      "bundle": false
-    },
-    {
-      "id": "spark-x2.5-1.7b",
+      "id": "local-openai-compatible",
       "role": "planner",
-      "upstream": "VERIFY_EXACT_UPSTREAM",
-      "license": "VERIFY_EXACT_UPSTREAM",
-      "status": "candidate",
-      "bundle": false
+      "runtime": "localhost-http",
+      "examples": ["llama.cpp", "Ollama", "LM Studio"],
+      "status": "supported-interface"
     },
     {
-      "id": "spark-x2.5-4b",
+      "id": "spark-x2.5",
       "role": "planner",
-      "upstream": "VERIFY_EXACT_UPSTREAM",
-      "license": "VERIFY_EXACT_UPSTREAM",
-      "status": "candidate",
-      "bundle": false
+      "upstream": "verify exact chosen checkpoint before bundling",
+      "status": "benchmark-candidate"
     }
   ]
 }

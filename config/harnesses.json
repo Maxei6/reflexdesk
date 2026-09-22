@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "harnesses": [
+    { "id": "opencode", "executable": "opencode", "transport": "planned-acp-or-sdk" },
+    { "id": "kilo", "executable": "kilo", "transport": "planned-acp" },
+    { "id": "codex", "executable": "codex", "transport": "cli-jsonl", "verified_command": "codex exec" },
+    { "id": "claude", "executable": "claude", "transport": "cli" },
+    { "id": "gemini", "executable": "gemini", "transport": "cli" }
+  ]
+}
