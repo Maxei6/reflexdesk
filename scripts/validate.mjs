@@ -20,6 +20,7 @@ const required = [
   "src-tauri/src/lib.rs",
   "src-tauri/src/stt.rs",
   "docs/P0.md",
+  "docs/RELEASE_SECURITY.md",
   "public/audio-worklet.js",
   "src-tauri/src/tray.rs",
   "src-tauri/src/process_supervisor.rs",
