@@ -1,0 +1,23 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "overlay",
+  "description": "ReflexDesk overlay capability restricted to audio state, transcript submission, and window positioning",
+  "windows": [
+    "overlay"
+  ],
+  "permissions": [
+    "core:default",
+    "core:window:allow-show",
+    "core:window:allow-hide",
+    "core:window:allow-set-always-on-top",
+    "core:window:allow-set-ignore-cursor-events",
+    "core:window:allow-set-position",
+    "core:window:allow-cursor-position",
+    "core:window:allow-monitor-from-point",
+    "core:window:allow-primary-monitor",
+    "core:window:allow-outer-size",
+    "allow-stt-transcribe",
+    "allow-transcript-nonce",
+    "allow-submit-transcript"
+  ]
+}

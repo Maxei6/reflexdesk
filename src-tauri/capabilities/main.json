@@ -1,10 +1,9 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
-  "identifier": "default",
-  "description": "ReflexDesk desktop capability",
+  "identifier": "main",
+  "description": "ReflexDesk main dashboard capability with settings, diagnostics, and privileged management controls",
   "windows": [
-    "main",
-    "overlay"
+    "main"
   ],
   "permissions": [
     "core:default",
@@ -19,6 +18,11 @@
     "core:window:allow-cursor-position",
     "core:window:allow-monitor-from-point",
     "core:window:allow-primary-monitor",
-    "core:window:allow-outer-size"
+    "core:window:allow-outer-size",
+    "allow-request-action",
+    "allow-confirm-action",
+    "allow-cancel-session",
+    "allow-stt-shutdown",
+    "allow-quit-app"
   ]
 }

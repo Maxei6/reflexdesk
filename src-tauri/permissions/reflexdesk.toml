@@ -1,0 +1,52 @@
+# ReflexDesk application command permissions (Tauri ACL).
+#
+# The sensitive commands are opted into access control via
+# `AppManifest::commands` in `src-tauri/build.rs`, so every identifier below
+# is ENFORCING: a window can invoke the mapped command only when its
+# capability file grants the identifier.
+#
+# Window scoping:
+# - main window: request/confirm/cancel + quit/shutdown (privileged control)
+# - overlay window: transcript submission + the STT calls it performs
+# Neither window can reach the other's commands, so a compromised renderer
+# cannot quit the app, approve confirmations, or forge transcripts.
+
+[[permission]]
+identifier = "allow-request-action"
+description = "Submit a policy-gated ActionEnvelope for execution (main window only)."
+commands.allow = ["request_action"]
+
+[[permission]]
+identifier = "allow-confirm-action"
+description = "Approve or deny a pending policy confirmation (main window only)."
+commands.allow = ["confirm_action"]
+
+[[permission]]
+identifier = "allow-cancel-session"
+description = "Cancel one action session without touching others (main window only)."
+commands.allow = ["cancel_session"]
+
+[[permission]]
+identifier = "allow-quit-app"
+description = "Quit ReflexDesk with owned-process teardown (main window only)."
+commands.allow = ["quit_app"]
+
+[[permission]]
+identifier = "allow-stt-shutdown"
+description = "Shut down the local speech engine child (main window only)."
+commands.allow = ["stt_shutdown"]
+
+[[permission]]
+identifier = "allow-transcript-nonce"
+description = "Issue a single-use transcript submission nonce (overlay window only)."
+commands.allow = ["transcript_nonce"]
+
+[[permission]]
+identifier = "allow-submit-transcript"
+description = "Submit a nonce-verified transcript for execution (overlay window only)."
+commands.allow = ["submit_transcript"]
+
+[[permission]]
+identifier = "allow-stt-transcribe"
+description = "Transcribe a bounded 16 kHz utterance (overlay window only)."
+commands.allow = ["stt_transcribe"]

@@ -13,11 +13,11 @@ jobs:
   frontend:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
         with:
           node-version: 22
-      - run: npm install
+      - run: npm ci
       - run: npm run prepare:icons
       - run: npm run check
       - run: npm run web:build
@@ -25,16 +25,39 @@ jobs:
   rust-check:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Install Linux Tauri dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
         with:
           node-version: 22
-      - run: npm install
+      - run: npm ci
       - run: npm run prepare:icons
       - run: npm run prepare:stt
-      - uses: dtolnay/rust-toolchain@stable
-      - run: cargo check --manifest-path src-tauri/Cargo.toml
+      - uses: dtolnay/rust-toolchain@a54c7fe9363c9033d2733882807b013e93601a10 # stable
+      # No Cargo.lock can be committed until a Rust toolchain is available to
+      # the implementing session; generate it here so --locked still enforces
+      # reproducibility within CI. Replace with a committed lockfile check
+      # once toolchains exist locally (plan 07 follow-up).
+      - run: cargo generate-lockfile --manifest-path src-tauri/Cargo.toml
+      - run: cargo check --locked --manifest-path src-tauri/Cargo.toml
+
+  npm-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: 22
+      - run: npm audit --audit-level=high
+
+  cargo-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: rustsec/audit-check@15be564177d7045b8092f3922c2a86ee0761e680 # v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          path: src-tauri
