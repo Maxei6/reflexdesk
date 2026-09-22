@@ -44,7 +44,7 @@ impl Drop for SttState {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 pub struct SttStatus {
     pub provider: &'static str,
     pub model: &'static str,
