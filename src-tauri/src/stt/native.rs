@@ -39,13 +39,18 @@ use tauri::AppHandle;
 
 /// Hardware and protocol baseline metrics comparing the current HTTP path against
 /// the native streaming target.
+///
+/// Measured fields are `None` until reproducibly measured on this machine
+/// (AGENTS.md: never claim benchmark numbers until measured). Only live
+/// observations via `record_latency` populate `mean_observed_http_latency_ms`;
+/// `native_target_speech_end_latency_ms` is a design target, not a measurement.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SttBaselineMetrics {
     pub provider: &'static str,
     pub model: &'static str,
-    pub http_p50_latency_ms: u64,
-    pub http_p95_latency_ms: u64,
-    pub http_word_error_rate: f32,
+    pub http_p50_latency_ms: Option<u64>,
+    pub http_p95_latency_ms: Option<u64>,
+    pub http_word_error_rate: Option<f32>,
     pub native_target_speech_end_latency_ms: u64,
     pub native_streaming_supported: bool,
     pub insecure_listener_prevented: bool,
@@ -110,9 +115,9 @@ impl BaselineTracker {
         SttBaselineMetrics {
             provider: "nemotron",
             model: "nvidia/nemotron-3.5-asr-streaming-0.6b",
-            http_p50_latency_ms: 180,
-            http_p95_latency_ms: 320,
-            http_word_error_rate: 0.042,
+            http_p50_latency_ms: None,
+            http_p95_latency_ms: None,
+            http_word_error_rate: None,
             native_target_speech_end_latency_ms: 45,
             native_streaming_supported: false,
             insecure_listener_prevented: true,
@@ -305,7 +310,9 @@ mod tests {
         assert!(!baseline.native_streaming_supported);
         assert_eq!(baseline.sample_rate_hz, 16000);
         assert_eq!(baseline.native_target_speech_end_latency_ms, 45);
-        assert_eq!(baseline.http_p50_latency_ms, 180);
+        assert!(baseline.http_p50_latency_ms.is_none());
+        assert!(baseline.http_p95_latency_ms.is_none());
+        assert!(baseline.http_word_error_rate.is_none());
         assert_eq!(baseline.total_transcriptions_observed, 0);
         assert!(baseline.mean_observed_http_latency_ms.is_none());
 

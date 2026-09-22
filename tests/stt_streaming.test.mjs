@@ -18,12 +18,14 @@ test("Plan 12: streaming audio bounds and rate validation", () => {
 });
 
 test("Plan 12: baseline metrics assert insecure listener is prevented", () => {
+  // Measured fields stay null until reproducibly measured on-machine;
+  // only the design target and seam flags are asserted here.
   const baseline = {
     provider: "nemotron",
     model: "nvidia/nemotron-3.5-asr-streaming-0.6b",
-    http_p50_latency_ms: 180,
-    http_p95_latency_ms: 320,
-    http_word_error_rate: 0.042,
+    http_p50_latency_ms: null,
+    http_p95_latency_ms: null,
+    http_word_error_rate: null,
     native_target_speech_end_latency_ms: 45,
     native_streaming_supported: false,
     insecure_listener_prevented: true,
@@ -31,8 +33,9 @@ test("Plan 12: baseline metrics assert insecure listener is prevented", () => {
 
   assert.equal(baseline.insecure_listener_prevented, true, "Upstream 0.0.0.0 WebSocket must be prevented");
   assert.equal(baseline.native_streaming_supported, false, "Native streaming is a seam in this pass");
-  assert.ok(baseline.native_target_speech_end_latency_ms < baseline.http_p50_latency_ms);
-  assert.ok(baseline.http_word_error_rate < 0.05);
+  assert.equal(baseline.http_p50_latency_ms, null, "No latency claim until measured on-machine");
+  assert.equal(baseline.http_p95_latency_ms, null, "No latency claim until measured on-machine");
+  assert.equal(baseline.http_word_error_rate, null, "No WER claim until measured on-machine");
 });
 
 test("Plan 12: partial transcripts do not trigger execution", () => {
