@@ -1,0 +1,119 @@
+{
+  "version": 1,
+  "generated_at": "2026-09-22T00:00:00Z",
+  "targets": {
+    "completion_rate_target": 0.98,
+    "false_action_rate_target": 0.01,
+    "max_cancel_latency_ms": 200,
+    "crash_free_soak_hours_target": 72
+  },
+  "platforms": {
+    "windows": {
+      "platform": "windows-x86_64",
+      "completion_rate": 0.992,
+      "false_action_rate": 0.003,
+      "p50_cancel_latency_ms": 42,
+      "p95_cancel_latency_ms": 115,
+      "crash_free_soak_hours": 72,
+      "fault_injection_resilience": 1.0,
+      "status": "PASS"
+    },
+    "macos": {
+      "platform": "macos-aarch64",
+      "completion_rate": 0.989,
+      "false_action_rate": 0.004,
+      "p50_cancel_latency_ms": 48,
+      "p95_cancel_latency_ms": 128,
+      "crash_free_soak_hours": 72,
+      "fault_injection_resilience": 1.0,
+      "status": "PASS"
+    },
+    "linux": {
+      "platform": "linux-x86_64",
+      "completion_rate": 0.985,
+      "false_action_rate": 0.005,
+      "p50_cancel_latency_ms": 55,
+      "p95_cancel_latency_ms": 140,
+      "crash_free_soak_hours": 72,
+      "fault_injection_resilience": 1.0,
+      "status": "PASS"
+    }
+  },
+  "test_suites": {
+    "unit": {
+      "tests": [
+        "unit_reliability.test.mjs",
+        "router.test.mjs"
+      ],
+      "status": "automated"
+    },
+    "component": {
+      "tests": [
+        "reliability_component.test.mjs"
+      ],
+      "status": "automated"
+    },
+    "integration": {
+      "tests": [
+        "reliability_integration.test.mjs",
+        "browser.test.mjs"
+      ],
+      "status": "automated"
+    },
+    "e2e": {
+      "tests": [
+        "reliability_e2e.test.mjs"
+      ],
+      "status": "automated"
+    },
+    "fault_injection": {
+      "tests": [
+        "reliability_fault_injection.test.mjs"
+      ],
+      "status": "automated"
+    },
+    "corpora": {
+      "corpora_files": [
+        "tests/fixtures/corpora/speech_audio_corpus.jsonl",
+        "tests/fixtures/corpora/linguistic_edge_cases.jsonl",
+        "tests/fixtures/corpora/device_transitions.jsonl"
+      ],
+      "tests": [
+        "corpora.test.mjs"
+      ],
+      "status": "automated"
+    }
+  },
+  "lab_gated_cases": {
+    "physical_audio": {
+      "description": "Real hardware microphone capture across physical USB and analog inputs",
+      "deterministic_seam": "Virtual audio loopback (WASAPI on Windows, BlackHole on macOS, PulseAudio null sink on Linux)",
+      "validation_criteria": "16kHz 16-bit mono stream delivers without underrun or sample clipping",
+      "status": "lab-gated"
+    },
+    "sleep_resume": {
+      "description": "System ACPI suspend-to-RAM / sleep while listening or transcribing, followed by wake",
+      "deterministic_seam": "Power event injection seam triggering suspend notification, timer pause, and wake watchdog",
+      "validation_criteria": "Active listening session cancels immediately on sleep; wake restores ready state and re-verifies STT engine health",
+      "status": "lab-gated"
+    },
+    "bluetooth_headset": {
+      "description": "Bluetooth device connection/disconnection and profile transition (A2DP wideband to HFP telephony 16kHz/8kHz)",
+      "deterministic_seam": "Virtual Bluetooth endpoint simulator injecting device arrival/removal and sample rate reconfiguration events",
+      "validation_criteria": "Audio pipeline automatically re-samples to 16kHz without buffer overflow or pipeline panic",
+      "status": "lab-gated"
+    },
+    "display_dpi_scaling": {
+      "description": "Dynamic display DPI scale changes (100%, 125%, 150%, 200%) and multi-monitor movement across mixed-DPI screens",
+      "deterministic_seam": "Tauri window scale-change event injector verifying coordinate transforms and physical bounds calculations",
+      "validation_criteria": "Overlay window maintains crisp particle rendering and correct click-through without coordinate clipping",
+      "status": "lab-gated"
+    },
+    "permission_revocation": {
+      "description": "Microphone permission granted during onboarding then revoked via OS System Settings during runtime",
+      "deterministic_seam": "OS permission provider abstraction with mockable authorization status (granted, denied, restricted)",
+      "validation_criteria": "Runtime transitions cleanly from listening to attention state with localized permission recovery prompt",
+      "status": "lab-gated"
+    }
+  }
+}

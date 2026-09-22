@@ -9,6 +9,7 @@ const jsonFiles = [
   "config/defaults.json",
   "config/harnesses.json",
   "models/registry.json",
+  "tests/matrix.json",
 ];
 
 for (const path of jsonFiles) JSON.parse(await readFile(path, "utf8"));
@@ -37,6 +38,7 @@ const required = [
   "src-tauri/src/tray.rs",
   "src-tauri/src/process_supervisor.rs",
   "src-tauri/src/settings.rs",
+  "src-tauri/src/secrets.rs",
   "src-tauri/src/lifecycle.rs",
   "scripts/prepare-stt-runtime.mjs",
   "docs/STT.md",

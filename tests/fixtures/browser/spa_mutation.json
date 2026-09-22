@@ -1,0 +1,99 @@
+{
+  "version": 1,
+  "scenarios": [
+    {
+      "id": "spa_stale_ref_01",
+      "name": "Element unmounted between find and click",
+      "initial_state": {
+        "url": "https://example.com/app/dashboard",
+        "elements": [
+          { "ref": "elem_42", "role": "button", "name": "Submit Order", "tag": "BUTTON" }
+        ]
+      },
+      "mutation": {
+        "type": "dom_replacement",
+        "removed_refs": ["elem_42"],
+        "added_elements": [
+          { "ref": "elem_43", "role": "button", "name": "Submit Order", "tag": "BUTTON" }
+        ]
+      },
+      "action": {
+        "type": "browser.click",
+        "target_ref": "elem_42"
+      },
+      "expected_error": "stale-ref",
+      "recovery": {
+        "reinspect_required": true,
+        "auto_retry": true,
+        "resolved_ref": "elem_43"
+      }
+    },
+    {
+      "id": "spa_route_change_01",
+      "name": "Client-side SPA route transition during action",
+      "initial_state": {
+        "url": "https://example.com/shop/cart",
+        "route": "/cart"
+      },
+      "mutation": {
+        "type": "history_pushState",
+        "new_url": "https://example.com/shop/checkout",
+        "new_route": "/checkout"
+      },
+      "action": {
+        "type": "browser.type",
+        "target_ref": "cart_promo_input",
+        "text": "DISCOUNT10"
+      },
+      "expected_error": "spa-mutation",
+      "recovery": {
+        "reinspect_required": true,
+        "cancel_subaction": true
+      }
+    },
+    {
+      "id": "spa_modal_backdrop_01",
+      "name": "Dynamic modal backdrop obscures target element",
+      "initial_state": {
+        "url": "https://example.com/editor",
+        "elements": [
+          { "ref": "elem_save", "role": "button", "name": "Save File" }
+        ]
+      },
+      "mutation": {
+        "type": "modal_overlay_opened",
+        "overlay_ref": "modal_backdrop_1",
+        "aria_hidden": ["elem_save"]
+      },
+      "action": {
+        "type": "browser.click",
+        "target_ref": "elem_save"
+      },
+      "expected_error": "element-not-found",
+      "recovery": {
+        "requires_modal_resolution": true
+      }
+    },
+    {
+      "id": "spa_captcha_botwall_01",
+      "name": "Cloudflare or Captcha challenge appeared",
+      "initial_state": {
+        "url": "https://example.com/login"
+      },
+      "mutation": {
+        "type": "challenge_injection",
+        "title": "Just a moment...",
+        "cf_challenge": true
+      },
+      "action": {
+        "type": "browser.click",
+        "target_ref": "login_btn"
+      },
+      "expected_error": "captcha",
+      "recovery": {
+        "escalate_to_user": true,
+        "auto_retry": false
+      }
+    }
+  ]
+}

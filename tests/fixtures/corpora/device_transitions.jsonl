@@ -1,0 +1,9 @@
+{"id": "trans_mic_unplug_01", "event": "mic_device_disconnected", "state_before": "listening", "expected_state": "idle", "expected_notification": "mic_disconnected", "reconnect_behavior": "auto_detect_default_device"}
+{"id": "trans_mic_sample_rate_01", "event": "mic_sample_rate_changed", "old_rate": 44100, "new_rate": 48000, "expected_behavior": "resample_to_16khz", "stream_uninterrupted": true}
+{"id": "trans_mic_permission_revoked_01", "event": "mic_permission_denied", "state_before": "listening", "expected_state": "error_permission", "recovery_action": "prompt_system_settings"}
+{"id": "trans_sleep_01", "event": "system_suspend_sleep", "state_before": "listening", "expected_state": "idle_paused", "audio_buffer_cleared": true, "cancel_in_flight": true}
+{"id": "trans_resume_01", "event": "system_resume_wake", "state_before": "idle_paused", "expected_state": "ready", "health_check_stt": true, "health_check_laya": true}
+{"id": "trans_offline_01", "event": "network_loss_offline", "mode": "local_first", "stt_operational": true, "reflex_operational": true, "cloud_planner_disabled": true, "local_planner_fallback": true}
+{"id": "trans_online_01", "event": "network_restore_online", "mode": "local_first", "stt_operational": true, "reflex_operational": true, "cloud_planner_available": true}
+{"id": "trans_bt_mic_switch_01", "event": "bluetooth_audio_profile_switch", "old_profile": "A2DP", "new_profile": "HFP", "latency_spike_absorbed": true, "buffer_overflow_prevented": true}
+{"id": "trans_dpi_change_01", "event": "display_scale_factor_changed", "old_scale": 1.0, "new_scale": 1.5, "overlay_geometry_updated": true, "no_visual_clipping": true}
