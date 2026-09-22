@@ -1,0 +1,43 @@
+# Plan 09 — Crash-proof process ownership
+
+**Priority:** P1  
+**Status:** NOT STARTED
+
+## Objective
+
+Anything ReflexDesk owns must terminate on explicit quit and, where the OS
+allows it, when the parent crashes. User-owned apps must remain untouched.
+
+## Ownership classes
+
+- INTERNAL: STT/reflex/planner helpers; always terminate.
+- OWNED_SESSION: agent/browser automation instance launched by ReflexDesk.
+- ATTACHED: pre-existing external service/session; detach only.
+- USER_APP: Spotify/Chrome/VS Code opened for user; never auto-kill.
+
+## Platform strategy
+
+Windows:
+- Job Objects
+- KILL_ON_JOB_CLOSE
+- assign full owned process tree
+
+Linux/macOS:
+- dedicated process groups/session IDs
+- SIGTERM group
+- bounded grace period
+- SIGKILL group
+
+## Work packages
+
+1. Replace bare Child map with ProcessHandle abstraction.
+2. Track pid/process-group/job identity and ownership type.
+3. Graceful shutdown callbacks.
+4. crash/force-kill tests.
+5. prevent PID-reuse mistakes.
+6. child-tree diagnostics.
+
+## Definition of done
+
+Tests prove owned grandchildren do not survive normal quit or forced parent
+termination, while USER_APP/ATTACHED processes are preserved.
