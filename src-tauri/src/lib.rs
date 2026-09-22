@@ -82,7 +82,7 @@ fn set_listening_internal(app: &AppHandle, next: bool) -> Result<RuntimeSnapshot
         let app_settings = app.state::<SettingsState>().snapshot();
         let requires_native_stt = app_settings.stt_provider == "nemotron";
 
-        if !current.ready && requires_native_stt {
+        if !current.ready && (!app_settings.setup_complete || requires_native_stt) {
             show_main(app);
             let _ = app.emit(
                 "reflexdesk://attention",
