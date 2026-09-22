@@ -57,15 +57,15 @@ fn endpoint(path: &str) -> String {
     format!("http://127.0.0.1:{PORT}{path}")
 }
 
-fn preferred_runtime_name() -> &'static str {
+fn preferred_runtime_dir() -> &'static str {
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     {
         if !(std::arch::is_x86_feature_detected!("avx2")
             && std::arch::is_x86_feature_detected!("fma"))
         {
-            return "crispasr-legacy.exe";
+            return "crispasr-legacy";
         }
-        return "crispasr.exe";
+        return "crispasr";
     }
 
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
@@ -78,11 +78,20 @@ fn preferred_runtime_name() -> &'static str {
         return "crispasr";
     }
 
+    #[cfg(not(all(
+        any(target_os = "windows", target_os = "linux"),
+        target_arch = "x86_64"
+    )))]
+    {
+        "crispasr"
+    }
+}
+
+fn runtime_binary_name() -> &'static str {
     #[cfg(target_os = "windows")]
     {
-        return "crispasr.exe";
+        "crispasr.exe"
     }
-
     #[cfg(not(target_os = "windows"))]
     {
         "crispasr"
@@ -90,17 +99,19 @@ fn preferred_runtime_name() -> &'static str {
 }
 
 fn runtime_candidates(app: &AppHandle) -> Vec<PathBuf> {
-    let name = preferred_runtime_name();
+    let dir = preferred_runtime_dir();
+    let name = runtime_binary_name();
     let mut candidates = Vec::new();
 
     if let Ok(resource_dir) = app.path().resource_dir() {
-        candidates.push(resource_dir.join(name));
-        candidates.push(resource_dir.join("resources").join(name));
+        candidates.push(resource_dir.join(dir).join(name));
+        candidates.push(resource_dir.join("resources").join(dir).join(name));
     }
 
     candidates.push(
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("resources")
+            .join(dir)
             .join(name),
     );
 
@@ -194,8 +205,14 @@ pub fn start(app: &AppHandle, state: &SttState) -> Result<SttStatus, String> {
     let port = PORT.to_string();
     let thread_count = threads.to_string();
 
-    let mut command = Command::new(binary);
+    let runtime_dir = binary
+        .parent()
+        .ok_or_else(|| "invalid CrispASR runtime path".to_string())?
+        .to_path_buf();
+
+    let mut command = Command::new(&binary);
     command
+        .current_dir(&runtime_dir)
         .args([
             "--server",
             "--host",
