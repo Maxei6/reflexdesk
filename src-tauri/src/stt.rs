@@ -128,7 +128,10 @@ fn health() -> bool {
         .build()
         .ok()
         .and_then(|client| client.get(endpoint("/health")).send().ok())
-        .map(|response| response.status().is_success())
+        .filter(|response| response.status().is_success())
+        .and_then(|response| response.json::<serde_json::Value>().ok())
+        .and_then(|payload| payload.get("backend").and_then(|value| value.as_str()).map(str::to_owned))
+        .map(|backend| backend == "nemotron")
         .unwrap_or(false)
 }
 
