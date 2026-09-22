@@ -1,10 +1,77 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
+  "integration_order": [
+    { "priority": 1, "transport": "native_sdk", "description": "Direct in-process SDK binding" },
+    { "priority": 2, "transport": "acp", "description": "Agent Control Protocol daemon RPC" },
+    { "priority": 3, "transport": "local_api", "description": "Structured local HTTP/JSON API" },
+    { "priority": 4, "transport": "jsonl_cli", "description": "Structured JSONL stdout CLI stream" },
+    { "priority": 5, "transport": "plain_cli", "description": "Subprocess CLI execution" },
+    { "priority": 6, "transport": "ui_fallback", "description": "UI automation last resort (marked with via:ui-fallback)" }
+  ],
   "harnesses": [
-    { "id": "opencode", "executable": "opencode", "transport": "planned-acp-or-sdk" },
-    { "id": "kilo", "executable": "kilo", "transport": "planned-acp" },
-    { "id": "codex", "executable": "codex", "transport": "cli-jsonl", "verified_command": "codex exec" },
-    { "id": "claude", "executable": "claude", "transport": "cli" },
-    { "id": "gemini", "executable": "gemini", "transport": "cli" }
+    {
+      "id": "codex",
+      "name": "Codex",
+      "executable": "codex",
+      "transport": "jsonl_cli",
+      "verified_command": "codex exec",
+      "supports_prompt_injection": true,
+      "ownership": "owned_session"
+    },
+    {
+      "id": "opencode",
+      "name": "OpenCode",
+      "executable": "opencode",
+      "transport": "acp",
+      "probe_flag": "--help",
+      "fallback_transport": "plain_cli",
+      "supports_prompt_injection": false,
+      "ownership": "owned_session"
+    },
+    {
+      "id": "kilo",
+      "name": "Kilo",
+      "executable": "kilo",
+      "transport": "acp",
+      "probe_flag": "--help",
+      "fallback_transport": "plain_cli",
+      "supports_prompt_injection": false,
+      "ownership": "owned_session"
+    },
+    {
+      "id": "claude",
+      "name": "Claude Code",
+      "executable": "claude",
+      "transport": "plain_cli",
+      "probe_flag": "--help",
+      "supports_prompt_injection": false,
+      "ownership": "owned_session"
+    },
+    {
+      "id": "gemini",
+      "name": "Gemini",
+      "executable": "gemini",
+      "transport": "plain_cli",
+      "probe_flag": "--help",
+      "supports_prompt_injection": false,
+      "ownership": "owned_session"
+    },
+    {
+      "id": "acp",
+      "name": "Generic ACP",
+      "executable": "acp",
+      "transport": "acp",
+      "supports_prompt_injection": false,
+      "ownership": "owned_session"
+    },
+    {
+      "id": "ui-fallback",
+      "name": "UI Automation Fallback",
+      "executable": "ui-fallback",
+      "transport": "ui_fallback",
+      "fallback_marker": "via:ui-fallback",
+      "supports_prompt_injection": false,
+      "ownership": "owned_session"
+    }
   ]
 }
