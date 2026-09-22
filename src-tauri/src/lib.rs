@@ -621,8 +621,11 @@ pub fn run() {
                         let _ = state.replace(loaded_settings.clone());
                     }
                 }
-                Err(error) => {
-                    let _ = update_runtime(app.handle(), Phase::Error, Some(error));
+                Err(_) => {
+                    loaded_settings.shortcut = "Unavailable (shortcut conflict)".into();
+                    let _ = settings::save(app.handle(), &loaded_settings);
+                    let state = app.state::<SettingsState>();
+                    let _ = state.replace(loaded_settings.clone());
                     show_main(app.handle());
                 }
             }
