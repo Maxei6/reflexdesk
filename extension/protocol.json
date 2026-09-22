@@ -1,0 +1,447 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ReflexDesk Browser Protocol",
+  "version": 1,
+  "description": "Bidirectional protocol specification between ReflexDesk desktop runtime and browser extension (Chrome MV3 / Firefox).",
+  "envelope": {
+    "type": "object",
+    "required": ["v", "session", "action", "nonce"],
+    "properties": {
+      "v": {
+        "type": "integer",
+        "const": 1,
+        "description": "Protocol version"
+      },
+      "session": {
+        "type": "string",
+        "description": "Unique session identifier originating from ActionEnvelope"
+      },
+      "pairing": {
+        "type": "string",
+        "description": "Per-install pairing authentication secret"
+      },
+      "tabId": {
+        "type": ["integer", "null"],
+        "description": "Target browser tab ID (null targets active tab)"
+      },
+      "ref": {
+        "type": ["string", "null"],
+        "description": "Target element reference identifier (e.g. 'b42')"
+      },
+      "action": {
+        "type": "string",
+        "enum": [
+          "browser.tabs",
+          "browser.open",
+          "browser.inspect",
+          "browser.find",
+          "browser.click",
+          "browser.type",
+          "browser.select",
+          "browser.scroll",
+          "browser.extract",
+          "browser.wait",
+          "browser.download",
+          "browser.verify"
+        ]
+      },
+      "args": {
+        "type": "object",
+        "description": "Action-specific payload arguments"
+      },
+      "nonce": {
+        "type": "string",
+        "description": "Single-use cryptographic nonce to prevent replay attacks"
+      }
+    }
+  },
+  "actions": {
+    "browser.tabs": {
+      "description": "List open browser tabs across windows",
+      "args": {
+        "type": "object",
+        "properties": {
+          "currentWindowOnly": { "type": "boolean", "default": false }
+        }
+      },
+      "result": {
+        "type": "object",
+        "required": ["tabs"],
+        "properties": {
+          "tabs": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["id", "title", "url", "active"],
+              "properties": {
+                "id": { "type": "integer" },
+                "title": { "type": "string" },
+                "url": { "type": "string" },
+                "active": { "type": "boolean" },
+                "status": { "type": "string" },
+                "incognito": { "type": "boolean" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "browser.open": {
+      "description": "Open a URL in an existing or new tab",
+      "args": {
+        "type": "object",
+        "required": ["url"],
+        "properties": {
+          "url": { "type": "string", "format": "uri" },
+          "newTab": { "type": "boolean", "default": false },
+          "active": { "type": "boolean", "default": true }
+        }
+      },
+      "result": {
+        "type": "object",
+        "required": ["tabId", "url"],
+        "properties": {
+          "tabId": { "type": "integer" },
+          "url": { "type": "string" },
+          "title": { "type": "string" }
+        }
+      }
+    },
+    "browser.inspect": {
+      "description": "Capture compressed semantic DOM and accessibility snapshot",
+      "args": {
+        "type": "object",
+        "properties": {
+          "tabId": { "type": ["integer", "null"] },
+          "includeInvisible": { "type": "boolean", "default": false },
+          "maxDepth": { "type": "integer", "default": 16 }
+        }
+      },
+      "result": {
+        "type": "object",
+        "required": ["tabId", "url", "title", "elements", "isMutating", "pageState"],
+        "properties": {
+          "tabId": { "type": "integer" },
+          "url": { "type": "string" },
+          "title": { "type": "string" },
+          "elements": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["ref", "tag", "bounds", "isSensitive", "isInteractive"],
+              "properties": {
+                "ref": { "type": "string" },
+                "tag": { "type": "string" },
+                "role": { "type": ["string", "null"] },
+                "name": { "type": ["string", "null"] },
+                "text": { "type": ["string", "null"] },
+                "value": { "type": ["string", "null"] },
+                "placeholder": { "type": ["string", "null"] },
+                "disabled": { "type": "boolean" },
+                "isSensitive": { "type": "boolean" },
+                "isInteractive": { "type": "boolean" },
+                "bounds": {
+                  "type": "object",
+                  "properties": {
+                    "x": { "type": "number" },
+                    "y": { "type": "number" },
+                    "width": { "type": "number" },
+                    "height": { "type": "number" }
+                  }
+                }
+              }
+            }
+          },
+          "isMutating": { "type": "boolean" },
+          "pageState": {
+            "type": "object",
+            "required": ["isBlocked", "isCaptcha", "isAuthRequired"],
+            "properties": {
+              "isBlocked": { "type": "boolean" },
+              "isCaptcha": { "type": "boolean" },
+              "isAuthRequired": { "type": "boolean" },
+              "statusCode": { "type": ["integer", "null"] }
+            }
+          }
+        }
+      }
+    },
+    "browser.find": {
+      "description": "Locate matching DOM elements by selector, text, or semantic role",
+      "args": {
+        "type": "object",
+        "required": ["query"],
+        "properties": {
+          "query": { "type": "string" },
+          "tabId": { "type": ["integer", "null"] },
+          "by": {
+            "type": "string",
+            "enum": ["selector", "text", "role", "label"],
+            "default": "text"
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "required": ["elements"],
+        "properties": {
+          "elements": {
+            "type": "array",
+            "items": { "$ref": "#/actions/browser.inspect/result/properties/elements/items" }
+          }
+        }
+      }
+    },
+    "browser.click": {
+      "description": "Click an element by semantic ref identifier",
+      "args": {
+        "type": "object",
+        "required": ["ref"],
+        "properties": {
+          "ref": { "type": "string" },
+          "tabId": { "type": ["integer", "null"] },
+          "button": { "type": "string", "enum": ["left", "right", "middle"], "default": "left" },
+          "modifiers": { "type": "array", "items": { "type": "string" } }
+        }
+      },
+      "result": {
+        "type": "object",
+        "required": ["success", "ref"],
+        "properties": {
+          "success": { "type": "boolean" },
+          "ref": { "type": "string" },
+          "navigated": { "type": "boolean" }
+        }
+      }
+    },
+    "browser.type": {
+      "description": "Type text into an input or textarea element by ref",
+      "args": {
+        "type": "object",
+        "required": ["ref", "text"],
+        "properties": {
+          "ref": { "type": "string" },
+          "text": { "type": "string" },
+          "tabId": { "type": ["integer", "null"] },
+          "clear": { "type": "boolean", "default": false },
+          "submit": { "type": "boolean", "default": false }
+        }
+      },
+      "result": {
+        "type": "object",
+        "required": ["success", "ref"],
+        "properties": {
+          "success": { "type": "boolean" },
+          "ref": { "type": "string" },
+          "valueLength": { "type": "integer" }
+        }
+      }
+    },
+    "browser.select": {
+      "description": "Select an option from a dropdown element by ref",
+      "args": {
+        "type": "object",
+        "required": ["ref", "value"],
+        "properties": {
+          "ref": { "type": "string" },
+          "value": { "type": "string" },
+          "tabId": { "type": ["integer", "null"] }
+        }
+      },
+      "result": {
+        "type": "object",
+        "required": ["success", "ref", "selectedValue"],
+        "properties": {
+          "success": { "type": "boolean" },
+          "ref": { "type": "string" },
+          "selectedValue": { "type": "string" }
+        }
+      }
+    },
+    "browser.scroll": {
+      "description": "Scroll page or element",
+      "args": {
+        "type": "object",
+        "properties": {
+          "tabId": { "type": ["integer", "null"] },
+          "ref": { "type": ["string", "null"] },
+          "direction": { "type": "string", "enum": ["up", "down", "top", "bottom"], "default": "down" },
+          "amount": { "type": "integer", "default": 500 }
+        }
+      },
+      "result": {
+        "type": "object",
+        "required": ["success", "scrollX", "scrollY"],
+        "properties": {
+          "success": { "type": "boolean" },
+          "scrollX": { "type": "number" },
+          "scrollY": { "type": "number" }
+        }
+      }
+    },
+    "browser.extract": {
+      "description": "Extract text, HTML, or structured markdown from tab or element",
+      "args": {
+        "type": "object",
+        "properties": {
+          "tabId": { "type": ["integer", "null"] },
+          "ref": { "type": ["string", "null"] },
+          "format": { "type": "string", "enum": ["text", "markdown", "html"], "default": "text" }
+        }
+      },
+      "result": {
+        "type": "object",
+        "required": ["content", "format"],
+        "properties": {
+          "content": { "type": "string" },
+          "format": { "type": "string" }
+        }
+      }
+    },
+    "browser.wait": {
+      "description": "Wait for an element, selector, or navigation event",
+      "args": {
+        "type": "object",
+        "required": ["selector"],
+        "properties": {
+          "selector": { "type": "string" },
+          "tabId": { "type": ["integer", "null"] },
+          "condition": { "type": "string", "enum": ["present", "visible", "hidden", "gone"], "default": "visible" },
+          "timeoutMs": { "type": "integer", "default": 5000 }
+        }
+      },
+      "result": {
+        "type": "object",
+        "required": ["matched", "elapsedMs"],
+        "properties": {
+          "matched": { "type": "boolean" },
+          "elapsedMs": { "type": "integer" }
+        }
+      }
+    },
+    "browser.download": {
+      "description": "Trigger or observe a file download via browser download manager",
+      "args": {
+        "type": "object",
+        "required": ["url"],
+        "properties": {
+          "url": { "type": "string", "format": "uri" },
+          "filename": { "type": ["string", "null"] },
+          "tabId": { "type": ["integer", "null"] }
+        }
+      },
+      "result": {
+        "type": "object",
+        "required": ["downloadId", "state"],
+        "properties": {
+          "downloadId": { "type": "integer" },
+          "state": { "type": "string", "enum": ["in_progress", "complete", "interrupted"] },
+          "filename": { "type": ["string", "null"] }
+        }
+      }
+    },
+    "browser.verify": {
+      "description": "Post-action semantic verification hook",
+      "args": {
+        "type": "object",
+        "required": ["kind"],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": ["element_present", "text_contains", "url_matches", "title_is", "element_hidden"]
+          },
+          "selector": { "type": ["string", "null"] },
+          "expect": {},
+          "timeoutMs": { "type": "integer", "default": 3000 },
+          "tabId": { "type": ["integer", "null"] }
+        }
+      },
+      "result": {
+        "type": "object",
+        "required": ["verified"],
+        "properties": {
+          "verified": { "type": "boolean" },
+          "actual": {},
+          "error": { "type": ["string", "null"] }
+        }
+      }
+    }
+  },
+  "compression": {
+    "skipTags": [
+      "script", "style", "svg", "path", "noscript", "template", "link", "meta",
+      "head", "canvas", "audio", "video", "source", "track", "iframe"
+    ],
+    "pruneContainers": {
+      "description": "Omit div/span elements lacking id, class, role, aria attributes, or direct text content",
+      "enabled": true
+    },
+    "maxTextLength": 200,
+    "maxTreeDepth": 16,
+    "maxElements": 500,
+    "refPrefix": "b",
+    "redaction": {
+      "rules": [
+        "input[type='password']",
+        "input[autocomplete*='cc-']",
+        "input[autocomplete*='password']",
+        "input[name*='card']",
+        "input[name*='cvv']",
+        "input[name*='cvc']",
+        "input[name*='password']",
+        "input[name*='token']",
+        "input[name*='secret']",
+        "input[name*='ssn']"
+      ],
+      "mask": "[REDACTED]",
+      "markSensitive": true
+    }
+  },
+  "errorCodes": {
+    "stale-ref": {
+      "description": "Target element reference is stale or no longer attached to DOM.",
+      "recoverable": true,
+      "recommendation": "Re-run browser.inspect and query element afresh."
+    },
+    "spa-mutation": {
+      "description": "DOM actively mutated during interaction attempt.",
+      "recoverable": true,
+      "recommendation": "Wait for mutation observer stabilization before retrying."
+    },
+    "blocked": {
+      "description": "Page request was blocked by security policy, CORS, or anti-bot challenge.",
+      "recoverable": false,
+      "recommendation": "User manual intervention required."
+    },
+    "captcha": {
+      "description": "Captcha or human verification challenge detected (Cloudflare Turnstile, reCAPTCHA, etc.).",
+      "recoverable": false,
+      "recommendation": "Alert user to complete challenge manually."
+    },
+    "auth-required": {
+      "description": "Authentication or credentials required to access content.",
+      "recoverable": false,
+      "recommendation": "Prompt user to log in."
+    },
+    "element-not-found": {
+      "description": "Element matching query or ref could not be found in target tab.",
+      "recoverable": true,
+      "recommendation": "Verify selector or refresh DOM snapshot."
+    },
+    "action-timeout": {
+      "description": "Operation exceeded time deadline waiting for DOM condition or tab navigation.",
+      "recoverable": true,
+      "recommendation": "Retry with larger timeout or verify page responsiveness."
+    },
+    "bridge-unavailable": {
+      "description": "Browser extension bridge is not connected or listening.",
+      "recoverable": true,
+      "recommendation": "Ensure ReflexDesk browser extension is installed and running."
+    },
+    "pairing-rejected": {
+      "description": "Pairing secret was invalid, expired, or missing in bridge request.",
+      "recoverable": false,
+      "recommendation": "Re-sync pairing secret with desktop settings."
+    }
+  }
+}

@@ -50,3 +50,18 @@ commands.allow = ["submit_transcript"]
 identifier = "allow-stt-transcribe"
 description = "Transcribe a bounded 16 kHz utterance (overlay window only)."
 commands.allow = ["stt_transcribe"]
+
+[[permission]]
+identifier = "allow-desktop-health"
+description = "Check semantic desktop accessibility backend health (main window only)."
+commands.allow = ["get_desktop_health"]
+
+[[permission]]
+identifier = "allow-browser-status"
+description = "Check browser automation and bridge status (main window only)."
+commands.allow = ["get_browser_status"]
+
+[[permission]]
+identifier = "allow-browser-pairing-secret"
+description = "Retrieve the active browser pairing secret (main window only)."
+commands.allow = ["get_browser_pairing_secret"]

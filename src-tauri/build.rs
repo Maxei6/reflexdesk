@@ -13,6 +13,9 @@ fn main() {
             "transcript_nonce",
             "submit_transcript",
             "stt_transcribe",
+            "get_desktop_health",
+            "get_browser_status",
+            "get_browser_pairing_secret",
         ])),
     )
     .unwrap();

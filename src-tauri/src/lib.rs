@@ -2,6 +2,7 @@ mod harness;
 pub mod desktop;
 pub mod reflex;
 pub mod planner;
+pub mod browser;
 mod lifecycle;
 mod model_manager;
 mod policy;
@@ -590,6 +591,16 @@ fn cancel_session(session_id: String) -> Result<(), String> {
 fn get_desktop_health() -> desktop::DesktopHealth {
     desktop::desktop_health()
 }
+#[tauri::command]
+fn get_browser_status() -> browser::BrowserStatus {
+    browser::get_status()
+}
+
+#[tauri::command]
+fn get_browser_pairing_secret() -> String {
+    browser::get_pairing_secret()
+}
+
 
 #[tauri::command]
 fn laya_route(
@@ -923,6 +934,8 @@ pub fn run() {
             confirm_action,
             cancel_session,
             get_desktop_health,
+            get_browser_status,
+            get_browser_pairing_secret,
             laya_route,
             reflex_route,
             get_reflex_health,

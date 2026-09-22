@@ -23,6 +23,9 @@
     "allow-confirm-action",
     "allow-cancel-session",
     "allow-stt-shutdown",
-    "allow-quit-app"
+    "allow-quit-app",
+    "allow-desktop-health",
+    "allow-browser-status",
+    "allow-browser-pairing-secret"
   ]
 }

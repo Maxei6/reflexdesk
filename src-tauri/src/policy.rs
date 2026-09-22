@@ -133,11 +133,165 @@ pub fn tool_registry() -> HashMap<&'static str, ToolDef> {
             external: true,
         },
         ToolDef {
+            name: "browser.tabs",
+            risk: RiskClass::Safe,
+            capability: "browser.read",
+            needs_confirm: false,
+            external: false,
+        },
+        ToolDef {
+            name: "browser.inspect",
+            risk: RiskClass::Safe,
+            capability: "browser.read",
+            needs_confirm: false,
+            external: false,
+        },
+        ToolDef {
+            name: "browser.find",
+            risk: RiskClass::Safe,
+            capability: "browser.read",
+            needs_confirm: false,
+            external: false,
+        },
+        ToolDef {
+            name: "browser.click",
+            risk: RiskClass::Sensitive,
+            capability: "browser.control",
+            needs_confirm: false,
+            external: false,
+        },
+        ToolDef {
+            name: "browser.type",
+            risk: RiskClass::Sensitive,
+            capability: "browser.control",
+            needs_confirm: false,
+            external: false,
+        },
+        ToolDef {
+            name: "browser.select",
+            risk: RiskClass::Sensitive,
+            capability: "browser.control",
+            needs_confirm: false,
+            external: false,
+        },
+        ToolDef {
+            name: "browser.scroll",
+            risk: RiskClass::Safe,
+            capability: "browser.control",
+            needs_confirm: false,
+            external: false,
+        },
+        ToolDef {
+            name: "browser.extract",
+            risk: RiskClass::Safe,
+            capability: "browser.read",
+            needs_confirm: false,
+            external: false,
+        },
+        ToolDef {
+            name: "browser.wait",
+            risk: RiskClass::Safe,
+            capability: "browser.read",
+            needs_confirm: false,
+            external: false,
+        },
+        ToolDef {
+            name: "browser.download",
+            risk: RiskClass::Sensitive,
+            capability: "browser.control",
+            needs_confirm: false,
+            external: true,
+        },
+        ToolDef {
+            name: "browser.verify",
+            risk: RiskClass::Safe,
+            capability: "browser.read",
+            needs_confirm: false,
+            external: false,
+        },
+        ToolDef {
             name: "harness.start",
             risk: RiskClass::ExternalCommit,
             capability: "harness.start",
             needs_confirm: true,
             external: true,
+        },
+        ToolDef {
+            name: "desktop.inspect",
+            risk: RiskClass::Safe,
+            capability: "desktop.inspect",
+            needs_confirm: false,
+            external: false,
+        },
+        ToolDef {
+            name: "desktop.find",
+            risk: RiskClass::Safe,
+            capability: "desktop.inspect",
+            needs_confirm: false,
+            external: false,
+        },
+        ToolDef {
+            name: "desktop.read",
+            risk: RiskClass::Safe,
+            capability: "desktop.inspect",
+            needs_confirm: false,
+            external: false,
+        },
+        ToolDef {
+            name: "desktop.verify",
+            risk: RiskClass::Safe,
+            capability: "desktop.inspect",
+            needs_confirm: false,
+            external: false,
+        },
+        ToolDef {
+            name: "desktop.focus_window",
+            risk: RiskClass::Safe,
+            capability: "desktop.control",
+            needs_confirm: false,
+            external: false,
+        },
+        ToolDef {
+            name: "desktop.scroll",
+            risk: RiskClass::Safe,
+            capability: "desktop.control",
+            needs_confirm: false,
+            external: false,
+        },
+        ToolDef {
+            name: "desktop.click",
+            risk: RiskClass::Sensitive,
+            capability: "desktop.control",
+            needs_confirm: false,
+            external: false,
+        },
+        ToolDef {
+            name: "desktop.invoke",
+            risk: RiskClass::Sensitive,
+            capability: "desktop.control",
+            needs_confirm: false,
+            external: false,
+        },
+        ToolDef {
+            name: "desktop.type",
+            risk: RiskClass::Sensitive,
+            capability: "desktop.control",
+            needs_confirm: false,
+            external: false,
+        },
+        ToolDef {
+            name: "desktop.press_key",
+            risk: RiskClass::Sensitive,
+            capability: "desktop.control",
+            needs_confirm: false,
+            external: false,
+        },
+        ToolDef {
+            name: "desktop.close_window",
+            risk: RiskClass::Destructive,
+            capability: "desktop.control",
+            needs_confirm: true,
+            external: false,
         },
     ] {
         map.insert(def.name, def);
@@ -226,6 +380,178 @@ pub fn validate_args(tool: &str, args: &serde_json::Value) -> Result<serde_json:
             }
             Ok(serde_json::json!({ "query": query }))
         }
+        "browser.tabs" => {
+            let mut out = serde_json::json!({});
+            if let Some(cw) = args.get("current_window_only").and_then(serde_json::Value::as_bool) {
+                out["current_window_only"] = serde_json::Value::Bool(cw);
+            }
+            Ok(out)
+        }
+        "browser.inspect" => {
+            let mut out = serde_json::json!({});
+            if let Some(tab_id) = args.get("tab_id").and_then(serde_json::Value::as_u64) {
+                out["tab_id"] = serde_json::json!(tab_id);
+            }
+            if let Some(depth) = args.get("max_depth").and_then(serde_json::Value::as_u64) {
+                out["max_depth"] = serde_json::json!(depth);
+            }
+            Ok(out)
+        }
+        "browser.find" => {
+            let query = args
+                .get("query")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "invalid-args: browser.find requires {query: string}".to_string())?;
+            let query = query.trim();
+            if query.is_empty() || query.len() > 500 {
+                return Err("invalid-args: browser.find query must be 1..500 chars".into());
+            }
+            let mut out = serde_json::json!({ "query": query });
+            if let Some(tab_id) = args.get("tab_id").and_then(serde_json::Value::as_u64) {
+                out["tab_id"] = serde_json::json!(tab_id);
+            }
+            if let Some(by) = args.get("by").and_then(serde_json::Value::as_str) {
+                let by_norm = by.to_lowercase();
+                if !["selector", "text", "role", "label"].contains(&by_norm.as_str()) {
+                    return Err("invalid-args: browser.find by must be selector, text, role, or label".into());
+                }
+                out["by"] = serde_json::Value::String(by_norm);
+            }
+            Ok(out)
+        }
+        "browser.click" => {
+            let ref_id = args
+                .get("ref")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "invalid-args: browser.click requires {ref: string}".to_string())?;
+            let ref_id = ref_id.trim();
+            if ref_id.is_empty() || ref_id.len() > 64 {
+                return Err("invalid-args: browser.click ref must be 1..64 chars".into());
+            }
+            let mut out = serde_json::json!({ "ref": ref_id });
+            if let Some(tab_id) = args.get("tab_id").and_then(serde_json::Value::as_u64) {
+                out["tab_id"] = serde_json::json!(tab_id);
+            }
+            if let Some(btn) = args.get("button").and_then(serde_json::Value::as_str) {
+                out["button"] = serde_json::Value::String(btn.to_lowercase());
+            }
+            Ok(out)
+        }
+        "browser.type" => {
+            let ref_id = args
+                .get("ref")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "invalid-args: browser.type requires {ref: string}".to_string())?;
+            let text = args
+                .get("text")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "invalid-args: browser.type requires {text: string}".to_string())?;
+            if text.len() > 8000 {
+                return Err("invalid-args: browser.type text exceeds 8000 chars".into());
+            }
+            let mut out = serde_json::json!({ "ref": ref_id.trim(), "text": text });
+            if let Some(tab_id) = args.get("tab_id").and_then(serde_json::Value::as_u64) {
+                out["tab_id"] = serde_json::json!(tab_id);
+            }
+            if let Some(clear) = args.get("clear").and_then(serde_json::Value::as_bool) {
+                out["clear"] = serde_json::Value::Bool(clear);
+            }
+            if let Some(submit) = args.get("submit").and_then(serde_json::Value::as_bool) {
+                out["submit"] = serde_json::Value::Bool(submit);
+            }
+            Ok(out)
+        }
+        "browser.select" => {
+            let ref_id = args
+                .get("ref")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "invalid-args: browser.select requires {ref: string}".to_string())?;
+            let value = args
+                .get("value")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "invalid-args: browser.select requires {value: string}".to_string())?;
+            let mut out = serde_json::json!({ "ref": ref_id.trim(), "value": value });
+            if let Some(tab_id) = args.get("tab_id").and_then(serde_json::Value::as_u64) {
+                out["tab_id"] = serde_json::json!(tab_id);
+            }
+            Ok(out)
+        }
+        "browser.scroll" => {
+            let mut out = serde_json::json!({});
+            if let Some(tab_id) = args.get("tab_id").and_then(serde_json::Value::as_u64) {
+                out["tab_id"] = serde_json::json!(tab_id);
+            }
+            if let Some(dir) = args.get("direction").and_then(serde_json::Value::as_str) {
+                let dir_norm = dir.to_lowercase();
+                if !["up", "down", "top", "bottom"].contains(&dir_norm.as_str()) {
+                    return Err("invalid-args: browser.scroll direction must be up, down, top, or bottom".into());
+                }
+                out["direction"] = serde_json::Value::String(dir_norm);
+            }
+            if let Some(amt) = args.get("amount").and_then(serde_json::Value::as_i64) {
+                out["amount"] = serde_json::json!(amt);
+            }
+            Ok(out)
+        }
+        "browser.extract" => {
+            let mut out = serde_json::json!({});
+            if let Some(tab_id) = args.get("tab_id").and_then(serde_json::Value::as_u64) {
+                out["tab_id"] = serde_json::json!(tab_id);
+            }
+            if let Some(r) = args.get("ref").and_then(serde_json::Value::as_str) {
+                out["ref"] = serde_json::Value::String(r.trim().to_string());
+            }
+            if let Some(fmt) = args.get("format").and_then(serde_json::Value::as_str) {
+                out["format"] = serde_json::Value::String(fmt.to_lowercase());
+            }
+            Ok(out)
+        }
+        "browser.wait" => {
+            let selector = args
+                .get("selector")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "invalid-args: browser.wait requires {selector: string}".to_string())?;
+            let mut out = serde_json::json!({ "selector": selector.trim() });
+            if let Some(tab_id) = args.get("tab_id").and_then(serde_json::Value::as_u64) {
+                out["tab_id"] = serde_json::json!(tab_id);
+            }
+            if let Some(cond) = args.get("condition").and_then(serde_json::Value::as_str) {
+                out["condition"] = serde_json::Value::String(cond.to_lowercase());
+            }
+            if let Some(timeout) = args.get("timeout_ms").and_then(serde_json::Value::as_u64) {
+                out["timeout_ms"] = serde_json::json!(timeout);
+            }
+            Ok(out)
+        }
+        "browser.download" => {
+            let url = args
+                .get("url")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "invalid-args: browser.download requires {url: string}".to_string())?;
+            let sanitized = crate::security::sanitize_open_external(url)?;
+            let mut out = serde_json::json!({ "url": sanitized });
+            if let Some(fname) = args.get("filename").and_then(serde_json::Value::as_str) {
+                out["filename"] = serde_json::Value::String(fname.to_string());
+            }
+            Ok(out)
+        }
+        "browser.verify" => {
+            let kind = args
+                .get("kind")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("browser.element_present");
+            let mut out = serde_json::json!({ "kind": kind });
+            if let Some(sel) = args.get("selector").and_then(serde_json::Value::as_str) {
+                out["selector"] = serde_json::Value::String(sel.to_string());
+            }
+            if let Some(exp) = args.get("expect") {
+                out["expect"] = exp.clone();
+            }
+            if let Some(timeout) = args.get("timeout_ms").and_then(serde_json::Value::as_u64) {
+                out["timeout_ms"] = serde_json::json!(timeout);
+            }
+            Ok(out)
+        }
         "harness.start" => {
             let harness = args
                 .get("harness")
@@ -253,6 +579,186 @@ pub fn validate_args(tool: &str, args: &serde_json::Value) -> Result<serde_json:
                 }
             }
             Ok(out)
+        }
+        "desktop.inspect" => {
+            let mut out = serde_json::json!({});
+            if let Some(win) = args.get("window").and_then(serde_json::Value::as_str) {
+                if win.len() > 256 {
+                    return Err("invalid-args: desktop.inspect window exceeds 256 chars".into());
+                }
+                out["window"] = serde_json::Value::String(win.to_string());
+            }
+            if let Some(sel) = args.get("selector") {
+                out["selector"] = sel.clone();
+            }
+            Ok(out)
+        }
+        "desktop.find" => {
+            let sel = args
+                .get("selector")
+                .ok_or_else(|| "invalid-args: desktop.find requires {selector: object}".to_string())?;
+            let mut out = serde_json::json!({ "selector": sel });
+            if let Some(win) = args.get("window").and_then(serde_json::Value::as_str) {
+                if win.len() > 256 {
+                    return Err("invalid-args: desktop.find window exceeds 256 chars".into());
+                }
+                out["window"] = serde_json::Value::String(win.to_string());
+            }
+            Ok(out)
+        }
+        "desktop.focus_window" => {
+            let win_id = args.get("window_id").and_then(serde_json::Value::as_u64);
+            let title = args.get("title_or_app").and_then(serde_json::Value::as_str);
+            if win_id.is_none() && title.is_none() {
+                return Err("invalid-args: desktop.focus_window requires window_id or title_or_app".into());
+            }
+            let mut out = serde_json::json!({});
+            if let Some(id) = win_id {
+                out["window_id"] = serde_json::Value::from(id);
+            }
+            if let Some(t) = title {
+                if t.trim().is_empty() || t.len() > 256 {
+                    return Err("invalid-args: desktop.focus_window title_or_app must be 1..256 chars".into());
+                }
+                out["title_or_app"] = serde_json::Value::String(t.to_string());
+            }
+            Ok(out)
+        }
+        "desktop.close_window" => {
+            let win_id = args.get("window_id").and_then(serde_json::Value::as_u64);
+            let title = args.get("title_or_app").and_then(serde_json::Value::as_str);
+            if win_id.is_none() && title.is_none() {
+                return Err("invalid-args: desktop.close_window requires window_id or title_or_app".into());
+            }
+            let mut out = serde_json::json!({});
+            if let Some(id) = win_id {
+                out["window_id"] = serde_json::Value::from(id);
+            }
+            if let Some(t) = title {
+                if t.trim().is_empty() || t.len() > 256 {
+                    return Err("invalid-args: desktop.close_window title_or_app must be 1..256 chars".into());
+                }
+                out["title_or_app"] = serde_json::Value::String(t.to_string());
+            }
+            Ok(out)
+        }
+        "desktop.click" => {
+            let el_id = args.get("element_id").and_then(serde_json::Value::as_u64);
+            let sel = args.get("selector");
+            if el_id.is_none() && sel.is_none() {
+                return Err("invalid-args: desktop.click requires element_id or selector".into());
+            }
+            let mut out = serde_json::json!({});
+            if let Some(id) = el_id {
+                out["element_id"] = serde_json::Value::from(id);
+            }
+            if let Some(s) = sel {
+                out["selector"] = s.clone();
+            }
+            Ok(out)
+        }
+        "desktop.invoke" => {
+            let el_id = args.get("element_id").and_then(serde_json::Value::as_u64);
+            let sel = args.get("selector");
+            if el_id.is_none() && sel.is_none() {
+                return Err("invalid-args: desktop.invoke requires element_id or selector".into());
+            }
+            let mut out = serde_json::json!({});
+            if let Some(id) = el_id {
+                out["element_id"] = serde_json::Value::from(id);
+            }
+            if let Some(s) = sel {
+                out["selector"] = s.clone();
+            }
+            if let Some(act) = args.get("action").and_then(serde_json::Value::as_str) {
+                if act.len() > 64 {
+                    return Err("invalid-args: desktop.invoke action exceeds 64 chars".into());
+                }
+                out["action"] = serde_json::Value::String(act.to_string());
+            }
+            Ok(out)
+        }
+        "desktop.type" => {
+            let el_id = args.get("element_id").and_then(serde_json::Value::as_u64);
+            let sel = args.get("selector");
+            if el_id.is_none() && sel.is_none() {
+                return Err("invalid-args: desktop.type requires element_id or selector".into());
+            }
+            let text = args
+                .get("text")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "invalid-args: desktop.type requires {text: string}".to_string())?;
+            if text.len() > 8000 {
+                return Err("invalid-args: desktop.type text exceeds 8000 chars".into());
+            }
+            let mut out = serde_json::json!({ "text": text });
+            if let Some(id) = el_id {
+                out["element_id"] = serde_json::Value::from(id);
+            }
+            if let Some(s) = sel {
+                out["selector"] = s.clone();
+            }
+            if let Some(cf) = args.get("clear_first").and_then(serde_json::Value::as_bool) {
+                out["clear_first"] = serde_json::Value::Bool(cf);
+            }
+            Ok(out)
+        }
+        "desktop.press_key" => {
+            let key = args
+                .get("key")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "invalid-args: desktop.press_key requires {key: string}".to_string())?;
+            let key = key.trim();
+            if key.is_empty() || key.len() > 64 {
+                return Err("invalid-args: desktop.press_key key must be 1..64 chars".into());
+            }
+            let mut out = serde_json::json!({ "key": key });
+            if let Some(mods) = args.get("modifiers").and_then(serde_json::Value::as_array) {
+                out["modifiers"] = serde_json::Value::Array(mods.clone());
+            }
+            Ok(out)
+        }
+        "desktop.scroll" => {
+            let el_id = args.get("element_id").and_then(serde_json::Value::as_u64);
+            let sel = args.get("selector");
+            if el_id.is_none() && sel.is_none() {
+                return Err("invalid-args: desktop.scroll requires element_id or selector".into());
+            }
+            let dir = args.get("direction").and_then(serde_json::Value::as_str).unwrap_or("down");
+            let amount = args.get("amount").and_then(serde_json::Value::as_f64).unwrap_or(1.0);
+            let mut out = serde_json::json!({ "direction": dir, "amount": amount });
+            if let Some(id) = el_id {
+                out["element_id"] = serde_json::Value::from(id);
+            }
+            if let Some(s) = sel {
+                out["selector"] = s.clone();
+            }
+            Ok(out)
+        }
+        "desktop.read" => {
+            let el_id = args.get("element_id").and_then(serde_json::Value::as_u64);
+            let sel = args.get("selector");
+            if el_id.is_none() && sel.is_none() {
+                return Err("invalid-args: desktop.read requires element_id or selector".into());
+            }
+            let mut out = serde_json::json!({});
+            if let Some(id) = el_id {
+                out["element_id"] = serde_json::Value::from(id);
+            }
+            if let Some(s) = sel {
+                out["selector"] = s.clone();
+            }
+            Ok(out)
+        }
+        "desktop.verify" => {
+            let kind = args.get("kind").and_then(serde_json::Value::as_str).unwrap_or("desktop-element-state");
+            let timeout_ms = args.get("timeout_ms").and_then(serde_json::Value::as_u64).unwrap_or(2000);
+            Ok(serde_json::json!({
+                "kind": kind,
+                "selector": args.get("selector"),
+                "expect": args.get("expect").cloned().unwrap_or(serde_json::Value::Null),
+                "timeout_ms": timeout_ms,
+            }))
         }
         _ => Err(format!("unknown-tool: {tool}")),
     }
@@ -628,6 +1134,20 @@ pub fn decide_and_prepare_with_settings(
 pub fn verify_stub(contract: &VerificationContract) -> Result<(), String> {
     if contract.kind == "none" {
         Ok(())
+    } else if contract.kind == "window-focused"
+        || contract.kind == "window-closed"
+        || contract.kind == "desktop-element-state"
+        || contract.kind == "element-state"
+        || contract.kind == "vision-fallback"
+    {
+        crate::desktop::verify_contract(contract)
+    } else if contract.kind.starts_with("browser.")
+        || matches!(
+            contract.kind.as_str(),
+            "element_present" | "element_hidden" | "text_contains" | "url_matches" | "title_is"
+        )
+    {
+        crate::browser::verify_action(contract).map(|_| ())
     } else {
         Err(format!(
             "unverifiable: unsupported verification kind '{}'",
