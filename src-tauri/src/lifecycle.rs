@@ -70,15 +70,35 @@ impl RuntimeState {
                 | Phase::Executing
                 | Phase::ConfirmationRequired
         );
-        state.listening = matches!(
-            phase,
-            Phase::Listening
-                | Phase::Transcribing
-                | Phase::Routing
-                | Phase::Executing
-                | Phase::ConfirmationRequired
-        );
+
+        match phase {
+            Phase::Listening => state.listening = true,
+            Phase::Booting
+            | Phase::SetupRequired
+            | Phase::Preparing
+            | Phase::Ready
+            | Phase::Degraded
+            | Phase::Error
+            | Phase::Updating
+            | Phase::ShuttingDown => state.listening = false,
+            Phase::Transcribing
+            | Phase::Routing
+            | Phase::Executing
+            | Phase::ConfirmationRequired => {}
+        }
+
         state.last_error = last_error;
+        Ok(state.clone())
+    }
+
+    pub fn set_listening(&self, active: bool) -> Result<RuntimeSnapshot, String> {
+        let mut state = self.0.lock().map_err(|_| "runtime lock poisoned")?;
+        state.listening = active;
+        if active && state.ready {
+            state.phase = Phase::Listening;
+        } else if !active && state.ready {
+            state.phase = Phase::Ready;
+        }
         Ok(state.clone())
     }
 }
