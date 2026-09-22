@@ -1,7 +1,7 @@
 # Plan 07 — Tauri and IPC security hardening
 
 **Priority:** P1  
-**Status:** NOT STARTED
+**Status:** CODE COMPLETE (ACCEPTANCE PENDING)
 
 ## Objective
 

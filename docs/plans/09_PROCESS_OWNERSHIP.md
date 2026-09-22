@@ -1,7 +1,7 @@
 # Plan 09 — Crash-proof process ownership
 
 **Priority:** P1  
-**Status:** NOT STARTED
+**Status:** CODE COMPLETE (ACCEPTANCE PENDING)
 
 ## Objective
 

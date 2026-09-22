@@ -1,7 +1,7 @@
 # Plan 01 — Policy engine and deterministic cancel
 
 **Priority:** P0.5  
-**Status:** NOT STARTED  
+**Status:** CODE COMPLETE (ACCEPTANCE PENDING)
 **Blocks:** desktop control, browser control, powerful tools
 
 ## Objective
