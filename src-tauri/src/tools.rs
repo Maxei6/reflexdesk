@@ -422,13 +422,18 @@ pub fn execute(
                 .get("target_version")
                 .and_then(Value::as_str)
                 .ok_or("missing target_version")?;
-            let staged = updater.stage_available(target_version, model_manager)?;
+            updater.stage_available(target_version, model_manager)?;
+            let activation = updater.activate_staged(target_version, model_manager)?;
             Ok(ToolResult {
-                ok: false,
-                message: format!(
-                    "verified update staged at {}; installer activation is unavailable in this build",
-                    staged.display()
-                ),
+                ok: true,
+                message: serde_json::to_string(&activation).map_err(|e| e.to_string())?,
+            })
+        }
+        "system.update_rollback" => {
+            let rollback = updater.schedule_rollback()?;
+            Ok(ToolResult {
+                ok: true,
+                message: serde_json::to_string(&rollback).map_err(|e| e.to_string())?,
             })
         }
         _ => Err(format!("unknown tool: {name}")),
