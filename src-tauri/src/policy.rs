@@ -307,6 +307,13 @@ pub fn tool_registry() -> HashMap<&'static str, ToolDef> {
             needs_confirm: true,
             external: true,
         },
+        ToolDef {
+            name: "system.update_rollback",
+            risk: RiskClass::Destructive,
+            capability: "system.update",
+            needs_confirm: true,
+            external: false,
+        },
     ] {
         map.insert(def.name, def);
     }
@@ -834,6 +841,7 @@ pub fn validate_args(tool: &str, args: &serde_json::Value) -> Result<serde_json:
                 })?;
             Ok(serde_json::json!({ "target_version": target_version }))
         }
+        "system.update_rollback" => Ok(serde_json::json!({})),
         _ => Err(format!("unknown-tool: {tool}")),
     }
 }
