@@ -843,7 +843,34 @@ fn planner_route(
         });
 
     let service = planner::PlannerService::new_with_secret(&planner_settings, secret_bytes);
-    let ctx = planner::PlannerContext::default();
+
+    // Explicit deterministic commands do not need a screen snapshot. For
+    // ambiguous/model-planned requests, provide bounded semantic desktop and
+    // browser state so the planner reasons about what is actually visible
+    // instead of hallucinating UI structure.
+    let deterministic = planner::builtin_plan(&text, "planner_route").is_some();
+    let ctx = if deterministic {
+        planner::PlannerContext::default()
+    } else {
+        let desktop_state = desktop::desktop_inspect(None, None).ok();
+        let active_app = desktop_state.as_ref().and_then(|snapshot| snapshot.active_app.clone());
+        let desktop_snapshot = desktop_state
+            .as_ref()
+            .and_then(|snapshot| serde_json::to_string(snapshot).ok());
+        let browser_snapshot = if browser::health() {
+            browser::inspect(None)
+                .ok()
+                .and_then(|snapshot| serde_json::to_string(&snapshot).ok())
+        } else {
+            None
+        };
+        planner::PlannerContext {
+            active_app,
+            desktop_snapshot,
+            browser_snapshot,
+            session_history: None,
+        }
+    };
     let req = planner::PlannerRequest::new("planner_route", text, allow_remote);
 
     let result = (|| -> Result<serde_json::Value, String> {

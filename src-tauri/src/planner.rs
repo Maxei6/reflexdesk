@@ -49,13 +49,16 @@ pub const DEFAULT_IDLE_UNLOAD_TIMEOUT: Duration = Duration::from_secs(300);
 /// System prompt constraining planner output to valid compact JSON tools.
 pub const PLANNER_SYSTEM_INSTRUCTION: &str = "\
 Return ONLY compact JSON with keys action, args (or an array of {action, args}). \
-Allowed actions: app.open, browser.open, browser.search, harness.start, unknown. \
-Never invent tools. \
-app.open args={app:string}; \
-browser.open args={url:http/https}; \
-browser.search args={query:string}; \
+Allowed actions: app.open, browser.open, browser.search, browser.tabs, browser.inspect, browser.find, browser.click, browser.type, browser.select, browser.scroll, browser.extract, browser.wait, browser.download, browser.verify, desktop.inspect, desktop.find, desktop.focus_window, desktop.click, desktop.invoke, desktop.type, desktop.press_key, desktop.scroll, desktop.read, desktop.close_window, harness.start, unknown. \
+Never invent tools. Prefer semantic selectors/names over coordinates. \
+app.open args={app:string}; browser.open args={url:http/https}; browser.search args={query:string}; \
+desktop.find args={selector:{role?:string,name?:string,text?:string,app?:string,window_title?:string,context?:string}}; \
+desktop.focus_window args={title_or_app:string}; desktop.click args={selector:{name?:string,role?:string,text?:string}}; \
+desktop.invoke args={selector:{name?:string,role?:string,text?:string},action?:string}; \
+desktop.type args={selector:{name?:string,role?:string,text?:string},text:string,clear_first?:boolean}; \
+desktop.read args={selector:{name?:string,role?:string,text?:string}}; desktop.close_window args={title_or_app:string}; \
 harness.start args={harness:string,prompt:string,cwd?:string}. \
-If unsure return {\"action\":\"unknown\",\"args\":{}}.";
+For multi-step requests return an array in execution order. If unsure return {\"action\":\"unknown\",\"args\":{}}.";
 
 // ---------------------------------------------------------------------------
 // Capabilities and Context Data Types
@@ -438,6 +441,91 @@ pub fn builtin_plan(text: &str, session_id: &str) -> Option<Vec<ActionEnvelope>>
                     serde_json::json!({ "app": target }),
                 ));
             }
+            continue;
+        }
+
+        // Explicit semantic desktop actions. These never use coordinates.
+        if let Some(target) = ["click ", "press "]
+            .iter()
+            .find_map(|p| strip_prefix_ci(clause, p))
+            .filter(|t| !t.is_empty())
+        {
+            out.push(validated_envelope(
+                session_id,
+                "desktop.click",
+                serde_json::json!({ "selector": { "name": target } }),
+            ));
+            continue;
+        }
+
+        if let Some(target) = ["toggle ", "turn on ", "turn off "]
+            .iter()
+            .find_map(|p| strip_prefix_ci(clause, p))
+            .filter(|t| !t.is_empty())
+        {
+            out.push(validated_envelope(
+                session_id,
+                "desktop.invoke",
+                serde_json::json!({
+                    "selector": { "name": target },
+                    "action": "toggle"
+                }),
+            ));
+            continue;
+        }
+
+        if let Some(target) = ["read ", "read out "]
+            .iter()
+            .find_map(|p| strip_prefix_ci(clause, p))
+            .filter(|t| !t.is_empty())
+        {
+            out.push(validated_envelope(
+                session_id,
+                "desktop.read",
+                serde_json::json!({ "selector": { "name": target } }),
+            ));
+            continue;
+        }
+
+        if let Some(target) = ["find ", "locate "]
+            .iter()
+            .find_map(|p| strip_prefix_ci(clause, p))
+            .filter(|t| !t.is_empty())
+        {
+            out.push(validated_envelope(
+                session_id,
+                "desktop.find",
+                serde_json::json!({ "selector": { "name": target } }),
+            ));
+            continue;
+        }
+
+        if let Some(rest) = strip_prefix_ci(clause, "type ") {
+            let lower_rest = rest.to_lowercase();
+            if let Some(pos) = lower_rest.rfind(" into ") {
+                let text = rest[..pos].trim();
+                let target = rest[pos + 6..].trim();
+                if !text.is_empty() && !target.is_empty() {
+                    out.push(validated_envelope(
+                        session_id,
+                        "desktop.type",
+                        serde_json::json!({
+                            "selector": { "name": target },
+                            "text": text,
+                            "clear_first": false
+                        }),
+                    ));
+                    continue;
+                }
+            }
+        }
+
+        if let Some(target) = strip_prefix_ci(clause, "close ").filter(|t| !t.is_empty()) {
+            out.push(validated_envelope(
+                session_id,
+                "desktop.close_window",
+                serde_json::json!({ "title_or_app": target }),
+            ));
             continue;
         }
 
@@ -1185,6 +1273,20 @@ mod tests {
         assert_eq!(plan.len(), 2);
         assert_eq!(plan[0].tool, "app.open");
         assert_eq!(plan[1].tool, "browser.search");
+    }
+
+    #[test]
+    fn test_builtin_planner_semantic_desktop_sequence() {
+        let plan = builtin_plan(
+            "open settings then click Bluetooth then close settings",
+            "desktop-sequence",
+        )
+        .expect("explicit desktop sequence should be deterministic");
+        assert_eq!(plan.len(), 3);
+        assert_eq!(plan[0].tool, "app.open");
+        assert_eq!(plan[1].tool, "desktop.click");
+        assert_eq!(plan[2].tool, "desktop.close_window");
+        assert_eq!(plan[1].args["selector"]["name"], "Bluetooth");
     }
 
     #[test]
