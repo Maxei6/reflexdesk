@@ -892,13 +892,15 @@ if($action -eq 'invoke') {
                 }
                 // UIA sees modern WinUI/WPF/Electron controls. Keep Win32 controls
                 // as a compatibility fallback when UIA does not expose them.
-                elements.extend(win32_elements.into_iter().filter(|legacy| {
-                    !elements.iter().any(|modern| {
-                        modern.name == legacy.name
-                            && modern.role == legacy.role
-                            && modern.bounds == legacy.bounds
+                let fallback_elements: Vec<_> = win32_elements
+                    .into_iter()
+                    .filter(|legacy| {
+                        !elements.iter().any(|modern| {
+                            modern.name == legacy.name && modern.role == legacy.role
+                        })
                     })
-                }));
+                    .collect();
+                elements.extend(fallback_elements);
             }
 
             let gen = SNAPSHOT_GENERATION.fetch_add(1, Ordering::SeqCst);
@@ -1149,7 +1151,7 @@ if($action -eq 'invoke') {
         fn read_element(&self, element: &DesktopElement) -> Result<String, String> {
             if element.id & UIA_ID_MASK != 0 {
                 let raw = uia_action(element, "read", None)?;
-                return serde_json::from_str::<String>(&raw).or(Ok(raw));
+                return Ok(serde_json::from_str::<String>(&raw).unwrap_or(raw));
             }
             let hwnd = (element.id & !0x8000_0000_0000_0000) as usize as HWND;
             if hwnd.is_null() {
