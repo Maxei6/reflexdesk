@@ -882,7 +882,7 @@ if($action -eq 'invoke') {
 
             let mut elements = uia_elements(target_window).unwrap_or_default();
             if !inspect_hwnd.is_null() {
-                let mut win32_elements = Vec::new();
+                let mut win32_elements: Vec<DesktopElement> = Vec::new();
                 unsafe {
                     EnumChildWindows(
                         inspect_hwnd,
