@@ -1,8 +1,7 @@
 # Plan 16 — Tray icon and visual polish
 
 **Priority:** P2  
-**Status:** ACCEPTANCE PENDING
-
+**Status:** CODE COMPLETE (ACCEPTANCE PENDING)
 ## Objective
 
 Make ReflexDesk legible at true system-utility sizes and keep visual state

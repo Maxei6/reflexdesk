@@ -50,8 +50,9 @@ rejects tampered artifacts, and a staged rollback is tested before stable v1.
 
 ## Implementation notes
 
-Status: PARTIAL — cryptographic verification and staging implemented; release
-credentials, installer activation, rollback, and clean-machine drills remain open.
+Status: CODE COMPLETE FOR UPDATE FLOW — verification, staging, platform installer
+activation, backup metadata, and deferred rollback recovery are implemented.
+Production trust credentials and clean-machine acceptance remain external blockers.
 
 Implemented without release credentials:
 - `src-tauri/src/updater.rs` verifies an Ed25519 signature over canonical
@@ -63,11 +64,13 @@ Implemented without release credentials:
 - Update staging and model acquisition/migration are mutually exclusive through
   RAII transaction guards.
 - `system.update_check` performs a real channel feed check.
-  `system.update_apply` currently stages a verified artifact but reports
-  `ok: false` with `installer activation unavailable`; it never claims an update
-  was installed.
-- The previous rollback command was removed because it only validated a backup
-  path and falsely reported success without restoring the application.
+- `system.update_apply` downloads and verifies the exact signed artifact, preserves
+  its installer extension, creates rollback metadata/backup, and launches the
+  platform installer only after the destructive policy confirmation.
+- `system.update_rollback` is separately confirmation-gated and schedules an OS
+  helper that waits for the running app to exit, restores the managed executable
+  backup, and relaunches the restored binary. It does not report an update or
+  rollback as installed merely because a file was staged.
 - CI uses the committed `Cargo.lock`; preview release preflight remains fail-closed.
 - Rust cryptographic tests cover signed downgrade rejection and manifest
   tampering. The Node updater/preflight suite remains green.
@@ -76,6 +79,5 @@ Still blocked:
 - Windows Authenticode certificate/service.
 - Apple Developer ID, notarization, and stapling credentials.
 - Production updater signing key/public key and stable feed.
-- A real signed platform installer activation path with rollback/recovery.
 - SmartScreen/Gatekeeper clean-machine verification and a staged rollback drill
-  before stable v1.
+  with production-signed artifacts before stable v1.

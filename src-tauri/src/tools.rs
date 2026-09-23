@@ -12,18 +12,18 @@ fn open_app(app: &str, supervisor: &ProcessSupervisor) -> Result<(), String> {
     let key = app.to_lowercase();
 
     #[cfg(target_os = "windows")]
-    let (program, args): (&str, Vec<String>) = (
-        match key.as_str() {
-            "spotify" => "spotify.exe",
-            "chrome" => "chrome.exe",
-            "firefox" => "firefox.exe",
-            "vscode" => "code.cmd",
-            "terminal" => "wt.exe",
-            "notepad" => "notepad.exe",
-            _ => return Err(format!("unknown app alias: {app}")),
-        },
-        Vec::new(),
-    );
+    let (program, args): (&str, Vec<String>) = match key.as_str() {
+        "spotify" => ("spotify.exe", vec![]),
+        "chrome" => ("chrome.exe", vec![]),
+        "firefox" => ("firefox.exe", vec![]),
+        "vscode" | "visual studio code" | "code" => ("code.cmd", vec![]),
+        "terminal" | "windows terminal" => ("wt.exe", vec![]),
+        "notepad" => ("notepad.exe", vec![]),
+        "calculator" | "calc" => ("calc.exe", vec![]),
+        "settings" | "system settings" => ("explorer.exe", vec!["ms-settings:".into()]),
+        "files" | "file explorer" | "explorer" => ("explorer.exe", vec![]),
+        _ => return Err(format!("unknown app alias: {app}")),
+    };
 
     #[cfg(target_os = "macos")]
     let (program, args): (&str, Vec<String>) = (
@@ -34,9 +34,12 @@ fn open_app(app: &str, supervisor: &ProcessSupervisor) -> Result<(), String> {
                 "spotify" => "Spotify",
                 "chrome" => "Google Chrome",
                 "firefox" => "Firefox",
-                "vscode" => "Visual Studio Code",
+                "vscode" | "visual studio code" | "code" => "Visual Studio Code",
                 "terminal" => "Terminal",
-                "notepad" => "TextEdit",
+                "notepad" | "textedit" => "TextEdit",
+                "calculator" | "calc" => "Calculator",
+                "settings" | "system settings" => "System Settings",
+                "files" | "finder" => "Finder",
                 _ => return Err(format!("unknown app alias: {app}")),
             }
             .into(),
@@ -49,9 +52,12 @@ fn open_app(app: &str, supervisor: &ProcessSupervisor) -> Result<(), String> {
             "spotify" => "spotify",
             "chrome" => "google-chrome",
             "firefox" => "firefox",
-            "vscode" => "code",
+            "vscode" | "visual studio code" | "code" => "code",
             "terminal" => "x-terminal-emulator",
-            "notepad" => "gedit",
+            "notepad" | "text editor" => "gedit",
+            "calculator" | "calc" => "gnome-calculator",
+            "settings" | "system settings" => "gnome-control-center",
+            "files" | "file manager" => "nautilus",
             _ => return Err(format!("unknown app alias: {app}")),
         },
         Vec::new(),
@@ -422,13 +428,18 @@ pub fn execute(
                 .get("target_version")
                 .and_then(Value::as_str)
                 .ok_or("missing target_version")?;
-            let staged = updater.stage_available(target_version, model_manager)?;
+            updater.stage_available(target_version, model_manager)?;
+            let activation = updater.activate_staged(target_version, model_manager)?;
             Ok(ToolResult {
-                ok: false,
-                message: format!(
-                    "verified update staged at {}; installer activation is unavailable in this build",
-                    staged.display()
-                ),
+                ok: true,
+                message: serde_json::to_string(&activation).map_err(|e| e.to_string())?,
+            })
+        }
+        "system.update_rollback" => {
+            let rollback = updater.schedule_rollback()?;
+            Ok(ToolResult {
+                ok: true,
+                message: serde_json::to_string(&rollback).map_err(|e| e.to_string())?,
             })
         }
         _ => Err(format!("unknown tool: {name}")),

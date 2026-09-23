@@ -89,7 +89,10 @@
         "arch": "x86_64, aarch64",
         "min_ram_mb": 2048,
         "recommended_ram_mb": 4096,
-        "cpu_features": ["avx2", "fma"],
+        "cpu_features": [
+          "avx2",
+          "fma"
+        ],
         "gpu_optional": true
       },
       "cache_path": "models/nemotron-3.5-asr-streaming-0.6b-q4_k.gguf",
@@ -177,6 +180,32 @@
       "status": "optional"
     },
     {
+      "id": "builtin-deterministic-planner",
+      "role": "planner",
+      "tier": "baseline",
+      "upstream": "reflexdesk",
+      "revision": "builtin-v1",
+      "url": null,
+      "size_bytes": 0,
+      "sha256": null,
+      "sha256_reason": "Compiled into ReflexDesk; no external model artifact.",
+      "recorded_sha256": null,
+      "runtime_compat": "reflexdesk-core",
+      "min_hardware": {
+        "arch": "any",
+        "min_ram_mb": 0,
+        "recommended_ram_mb": 0,
+        "cpu_features": [],
+        "gpu_optional": true
+      },
+      "cache_path": null,
+      "license": "MIT",
+      "notice": "Zero-configuration deterministic planner for high-confidence app, browser, desktop focus, and agent delegation commands. Ambiguous requests can escalate to an optional local model endpoint.",
+      "replaces": null,
+      "runtime": "reflexdesk-core",
+      "status": "default"
+    },
+    {
       "id": "local-openai-compatible",
       "role": "planner",
       "tier": "flexible",
@@ -206,81 +235,6 @@
         "LM Studio"
       ],
       "status": "supported-interface"
-    },
-    {
-      "id": "spark-x2.5-compact",
-      "role": "planner",
-      "tier": "low",
-      "upstream": "verify exact chosen checkpoint before bundling",
-      "revision": "benchmark-candidate",
-      "url": null,
-      "size_bytes": null,
-      "sha256": null,
-      "sha256_reason": "Low-tier benchmark candidate pending evaluation.",
-      "recorded_sha256": null,
-      "runtime_compat": "CrispASR / llama.cpp",
-      "min_hardware": {
-        "arch": "any",
-        "min_ram_mb": 2048,
-        "recommended_ram_mb": 4096,
-        "cpu_features": [],
-        "gpu_optional": true
-      },
-      "cache_path": "models/spark-x2.5-compact",
-      "license": "Pending evaluation",
-      "notice": "Low-tier compact local planner model (0.5B-1.5B parameters) for constrained hardware.",
-      "replaces": null,
-      "status": "benchmark-candidate"
-    },
-    {
-      "id": "spark-x2.5",
-      "role": "planner",
-      "tier": "mid",
-      "upstream": "verify exact chosen checkpoint before bundling",
-      "revision": "benchmark-candidate",
-      "url": null,
-      "size_bytes": null,
-      "sha256": null,
-      "sha256_reason": "Mid-tier benchmark candidate pending evaluation.",
-      "recorded_sha256": null,
-      "runtime_compat": "CrispASR / llama.cpp",
-      "min_hardware": {
-        "arch": "any",
-        "min_ram_mb": 4096,
-        "recommended_ram_mb": 8192,
-        "cpu_features": [],
-        "gpu_optional": true
-      },
-      "cache_path": "models/spark-x2.5",
-      "license": "Pending evaluation",
-      "notice": "Mid-tier compact local planner model (3B parameters) balancing accuracy and latency.",
-      "replaces": null,
-      "status": "benchmark-candidate"
-    },
-    {
-      "id": "spark-x2.5-pro",
-      "role": "planner",
-      "tier": "high",
-      "upstream": "verify exact chosen checkpoint before bundling",
-      "revision": "benchmark-candidate",
-      "url": null,
-      "size_bytes": null,
-      "sha256": null,
-      "sha256_reason": "High-tier benchmark candidate pending evaluation.",
-      "recorded_sha256": null,
-      "runtime_compat": "CrispASR / llama.cpp",
-      "min_hardware": {
-        "arch": "any",
-        "min_ram_mb": 8192,
-        "recommended_ram_mb": 16384,
-        "cpu_features": [],
-        "gpu_optional": true
-      },
-      "cache_path": "models/spark-x2.5-pro",
-      "license": "Pending evaluation",
-      "notice": "High-tier local planner model (7B-8B parameters) for full desktop context reasoning.",
-      "replaces": null,
-      "status": "benchmark-candidate"
     }
   ]
 }

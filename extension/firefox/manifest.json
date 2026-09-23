@@ -3,15 +3,9 @@
   "name": "ReflexDesk Browser Bridge",
   "version": "0.1.0",
   "description": "Semantic DOM and accessibility automation bridge for ReflexDesk.",
-  "icons": {
-    "16": "icons/icon16.png",
-    "48": "icons/icon48.png",
-    "128": "icons/icon128.png"
-  },
   "permissions": [
     "activeTab",
     "tabs",
-    "debugger",
     "storage",
     "downloads",
     "scripting"
@@ -20,7 +14,9 @@
     "<all_urls>"
   ],
   "background": {
-    "service_worker": "background.js"
+    "scripts": [
+      "background.js"
+    ]
   },
   "content_scripts": [
     {
@@ -37,5 +33,11 @@
   "action": {
     "default_popup": "popup.html",
     "default_title": "ReflexDesk Browser Bridge"
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "browser-bridge@reflexdesk.local",
+      "strict_min_version": "128.0"
+    }
   }
 }

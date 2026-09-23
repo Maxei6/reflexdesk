@@ -477,6 +477,224 @@ mod windows_backend {
 
     pub struct WindowsBackend;
 
+    const UIA_ID_MASK: u64 = 0x4000_0000_0000_0000;
+
+    fn run_powershell(script: &str, envs: &[(&str, &str)]) -> Result<String, String> {
+        let mut command = std::process::Command::new("powershell.exe");
+        command.args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            script,
+        ]);
+        for (key, value) in envs {
+            command.env(key, value);
+        }
+        let output = command
+            .output()
+            .map_err(|e| format!("uia-powershell-unavailable: {e}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "uia-error: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            ));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    }
+
+    fn stable_uia_id(parts: &str) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        parts.hash(&mut hasher);
+        UIA_ID_MASK | (hasher.finish() & 0x0fff_ffff_ffff_ffff)
+    }
+
+    fn uia_elements(target_window: Option<&str>) -> Result<Vec<DesktopElement>, String> {
+        const SCRIPT: &str = r#"
+$ErrorActionPreference='Stop'
+Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName UIAutomationTypes
+$root=[System.Windows.Automation.AutomationElement]::RootElement
+$target=$env:REFLEX_TARGET
+$pidToInspect=0
+if ($target) {
+  $windows=$root.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+  foreach($w in $windows) {
+    if (($w.Current.Name -like "*$target*") -or ($w.Current.ClassName -like "*$target*")) {
+      $pidToInspect=$w.Current.ProcessId
+      break
+    }
+  }
+  if ($pidToInspect -eq 0) { throw "window not found: $target" }
+} else {
+  $focused=[System.Windows.Automation.AutomationElement]::FocusedElement
+  if ($null -ne $focused) { $pidToInspect=$focused.Current.ProcessId }
+}
+if ($pidToInspect -eq 0) { throw "no focused process" }
+$condition=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ProcessIdProperty,$pidToInspect)
+$items=$root.FindAll([System.Windows.Automation.TreeScope]::Descendants,$condition)
+$result=@()
+$limit=[Math]::Min($items.Count,600)
+for($i=0;$i -lt $limit;$i++) {
+  $e=$items.Item($i)
+  try {
+    $r=$e.Current.BoundingRectangle
+    if ($e.Current.IsOffscreen) { continue }
+    $role=$e.Current.LocalizedControlType
+    if (-not $role) { $role=$e.Current.ControlType.ProgrammaticName.Replace('ControlType.','').ToLowerInvariant() }
+    $name=$e.Current.Name
+    $automationId=$e.Current.AutomationId
+    $class=$e.Current.ClassName
+    $framework=$e.Current.FrameworkId
+    $actions=@()
+    $patterns=$e.GetSupportedPatterns()
+    foreach($p in $patterns) {
+      $pn=$p.ProgrammaticName
+      if($pn -like '*Invoke*'){$actions+='invoke';$actions+='click'}
+      elseif($pn -like '*Value*'){$actions+='type';$actions+='read'}
+      elseif($pn -like '*Toggle*'){$actions+='toggle';$actions+='click'}
+      elseif($pn -like '*Scroll*'){$actions+='scroll'}
+      elseif($pn -like '*SelectionItem*'){$actions+='select';$actions+='click'}
+    }
+    $result += [pscustomobject]@{
+      name=[string]$name; role=[string]$role; automation_id=[string]$automationId;
+      class=[string]$class; framework=[string]$framework;
+      x=[double]$r.X; y=[double]$r.Y; width=[double]$r.Width; height=[double]$r.Height;
+      enabled=[bool]$e.Current.IsEnabled; focused=[bool]$e.Current.HasKeyboardFocus;
+      actions=@($actions | Select-Object -Unique)
+    }
+  } catch {}
+}
+$result | ConvertTo-Json -Compress -Depth 5
+"#;
+        let target = target_window.unwrap_or("");
+        let output = run_powershell(SCRIPT, &[("REFLEX_TARGET", target)])?;
+        if output.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+        let parsed: serde_json::Value =
+            serde_json::from_str(&output).map_err(|e| format!("uia-json-invalid: {e}"))?;
+        let items = match parsed {
+            serde_json::Value::Array(items) => items,
+            serde_json::Value::Object(_) => vec![parsed],
+            _ => Vec::new(),
+        };
+        let mut out = Vec::new();
+        for (idx, item) in items.into_iter().enumerate() {
+            let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let role = item.get("role").and_then(|v| v.as_str()).unwrap_or("control").to_lowercase();
+            let automation_id = item.get("automation_id").and_then(|v| v.as_str()).unwrap_or("");
+            let class = item.get("class").and_then(|v| v.as_str()).unwrap_or("");
+            let framework = item.get("framework").and_then(|v| v.as_str()).unwrap_or("");
+            let key = format!("{name}|{role}|{automation_id}|{class}|{framework}|{idx}");
+            let actions = item
+                .get("actions")
+                .and_then(|v| v.as_array())
+                .map(|values| {
+                    values.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect()
+                })
+                .unwrap_or_default();
+            out.push(DesktopElement {
+                id: stable_uia_id(&key),
+                role,
+                name,
+                value: None,
+                bounds: Some(ElementBounds {
+                    x: item.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                    y: item.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                    width: item.get("width").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                    height: item.get("height").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                }),
+                enabled: item.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true),
+                focused: item.get("focused").and_then(|v| v.as_bool()).unwrap_or(false),
+                actions,
+                context: Some(format!("uia|{automation_id}|{class}|{framework}")),
+                window_id: None,
+            });
+        }
+        Ok(out)
+    }
+
+    fn uia_action(element: &DesktopElement, action: &str, text: Option<&str>) -> Result<String, String> {
+        const SCRIPT: &str = r#"
+$ErrorActionPreference='Stop'
+Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName UIAutomationTypes
+Add-Type -AssemblyName System.Windows.Forms
+$root=[System.Windows.Automation.AutomationElement]::RootElement
+$name=$env:REFLEX_NAME
+$automationId=$env:REFLEX_AUTOMATION_ID
+$role=$env:REFLEX_ROLE
+$all=$root.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
+$el=$null
+foreach($candidate in $all) {
+  try {
+    if ($automationId -and $candidate.Current.AutomationId -eq $automationId) { $el=$candidate; break }
+    if (-not $automationId -and $name -and $candidate.Current.Name -eq $name) {
+      $candidateRole=$candidate.Current.LocalizedControlType
+      if (-not $role -or $candidateRole -eq $role) { $el=$candidate; break }
+    }
+  } catch {}
+}
+if ($null -eq $el) { throw "element not found" }
+$action=$env:REFLEX_ACTION
+if($action -eq 'invoke') {
+  $pattern=$null
+  if($el.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern,[ref]$pattern)) {
+    ([System.Windows.Automation.InvokePattern]$pattern).Invoke()
+  } elseif($el.TryGetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern,[ref]$pattern)) {
+    ([System.Windows.Automation.TogglePattern]$pattern).Toggle()
+  } elseif($el.TryGetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern,[ref]$pattern)) {
+    ([System.Windows.Automation.SelectionItemPattern]$pattern).Select()
+  } else {
+    $el.SetFocus()
+    [System.Windows.Forms.SendKeys]::SendWait('{ENTER}')
+  }
+  'ok'
+} elseif($action -eq 'type') {
+  $pattern=$null
+  if($el.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern,[ref]$pattern)) {
+    ([System.Windows.Automation.ValuePattern]$pattern).SetValue($env:REFLEX_TEXT)
+    'ok'
+  } else { throw "element does not expose ValuePattern" }
+} elseif($action -eq 'read') {
+  $pattern=$null
+  if($el.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern,[ref]$pattern)) {
+    ([System.Windows.Automation.ValuePattern]$pattern).Current.Value | ConvertTo-Json -Compress
+  } else {
+    ([string]$el.Current.Name) | ConvertTo-Json -Compress
+  }
+} elseif($action -eq 'scroll-down' -or $action -eq 'scroll-up') {
+  $pattern=$null
+  if($el.TryGetCurrentPattern([System.Windows.Automation.ScrollItemPattern]::Pattern,[ref]$pattern)) {
+    ([System.Windows.Automation.ScrollItemPattern]$pattern).ScrollIntoView()
+  }
+  $el.SetFocus()
+  if($action -eq 'scroll-down') {[System.Windows.Forms.SendKeys]::SendWait('{PGDN}')} else {[System.Windows.Forms.SendKeys]::SendWait('{PGUP}')}
+  'ok'
+} else { throw "unsupported UIA action" }
+"#;
+        let automation_id = element
+            .context
+            .as_deref()
+            .and_then(|ctx| ctx.split('|').nth(1))
+            .unwrap_or("");
+        let output = run_powershell(
+            SCRIPT,
+            &[
+                ("REFLEX_NAME", element.name.as_str()),
+                ("REFLEX_AUTOMATION_ID", automation_id),
+                ("REFLEX_ROLE", element.role.as_str()),
+                ("REFLEX_ACTION", action),
+                ("REFLEX_TEXT", text.unwrap_or("")),
+            ],
+        )?;
+        Ok(output)
+    }
+
     unsafe extern "system" fn enum_windows_callback(hwnd: HWND, lparam: LPARAM) -> BOOL {
         let windows = &mut *(lparam as *mut Vec<(HWND, String, String, RECT, bool, bool)>);
 
@@ -604,7 +822,7 @@ mod windows_backend {
                 healthy: true,
                 platform: "windows",
                 permissions_granted: true,
-                details: "Windows native Win32 accessibility fallback available; UIA patterns are not linked".into(),
+                details: "Windows UI Automation semantic controls enabled with Win32 fallback for legacy HWND controls".into(),
                 recovery_instructions: None,
             }
         }
@@ -662,15 +880,27 @@ mod windows_backend {
                 fg_hwnd
             };
 
-            let mut elements = Vec::new();
+            let mut elements = uia_elements(target_window).unwrap_or_default();
             if !inspect_hwnd.is_null() {
+                let mut win32_elements: Vec<DesktopElement> = Vec::new();
                 unsafe {
                     EnumChildWindows(
                         inspect_hwnd,
                         Some(enum_child_callback),
-                        &mut elements as *mut _ as LPARAM,
+                        &mut win32_elements as *mut _ as LPARAM,
                     );
                 }
+                // UIA sees modern WinUI/WPF/Electron controls. Keep Win32 controls
+                // as a compatibility fallback when UIA does not expose them.
+                let fallback_elements: Vec<_> = win32_elements
+                    .into_iter()
+                    .filter(|legacy| {
+                        !elements.iter().any(|modern| {
+                            modern.name == legacy.name && modern.role == legacy.role
+                        })
+                    })
+                    .collect();
+                elements.extend(fallback_elements);
             }
 
             let gen = SNAPSHOT_GENERATION.fetch_add(1, Ordering::SeqCst);
@@ -795,10 +1025,17 @@ mod windows_backend {
         }
 
         fn invoke_element(&self, element: &DesktopElement, _action: &str) -> Result<(), String> {
-            self.click_element(element)
+            if element.id & UIA_ID_MASK != 0 {
+                uia_action(element, "invoke", None).map(|_| ())
+            } else {
+                self.click_element(element)
+            }
         }
 
         fn click_element(&self, element: &DesktopElement) -> Result<(), String> {
+            if element.id & UIA_ID_MASK != 0 {
+                return uia_action(element, "invoke", None).map(|_| ());
+            }
             let hwnd = (element.id & !0x8000_0000_0000_0000) as usize as HWND;
             if hwnd.is_null() {
                 return Err("invalid-element-id: element has no valid window handle".into());
@@ -824,6 +1061,9 @@ mod windows_backend {
             text: &str,
             _clear_first: bool,
         ) -> Result<(), String> {
+            if element.id & UIA_ID_MASK != 0 {
+                return uia_action(element, "type", Some(text)).map(|_| ());
+            }
             let hwnd = (element.id & !0x8000_0000_0000_0000) as usize as HWND;
             if hwnd.is_null() {
                 return Err("invalid-element-id: element has no valid window handle".into());
@@ -880,6 +1120,10 @@ mod windows_backend {
             direction: &str,
             amount: f64,
         ) -> Result<(), String> {
+            if element.id & UIA_ID_MASK != 0 {
+                let action = if direction.eq_ignore_ascii_case("up") { "scroll-up" } else { "scroll-down" };
+                return uia_action(element, action, None).map(|_| ());
+            }
             let hwnd = (element.id & !0x8000_0000_0000_0000) as usize as HWND;
             if hwnd.is_null() {
                 return Err("invalid-element-id: element has no valid window handle".into());
@@ -905,6 +1149,10 @@ mod windows_backend {
         }
 
         fn read_element(&self, element: &DesktopElement) -> Result<String, String> {
+            if element.id & UIA_ID_MASK != 0 {
+                let raw = uia_action(element, "read", None)?;
+                return Ok(serde_json::from_str::<String>(&raw).unwrap_or(raw));
+            }
             let hwnd = (element.id & !0x8000_0000_0000_0000) as usize as HWND;
             if hwnd.is_null() {
                 return Ok(element.name.clone());
@@ -932,74 +1180,249 @@ mod macos_backend {
     use super::*;
 
     pub struct MacosBackend;
+    const AX_ID_MASK: u64 = 0x4000_0000_0000_0000;
+
+    fn stable_id(parts: &str) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        parts.hash(&mut hasher);
+        AX_ID_MASK | (hasher.finish() & 0x0fff_ffff_ffff_ffff)
+    }
+
+    fn run_jxa(script: &str, envs: &[(&str, &str)]) -> Result<String, String> {
+        let mut command = std::process::Command::new("/usr/bin/osascript");
+        command.args(["-l", "JavaScript", "-e", script]);
+        for (key, value) in envs {
+            command.env(key, value);
+        }
+        let output = command
+            .output()
+            .map_err(|e| format!("macos-ax-runtime-unavailable: {e}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "macos-ax-error: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            ));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    }
+
+    fn ax_enabled() -> bool {
+        let output = std::process::Command::new("/usr/bin/osascript")
+            .args([
+                "-e",
+                "tell application \"System Events\" to return UI elements enabled",
+            ])
+            .output();
+        matches!(output, Ok(out) if out.status.success() && String::from_utf8_lossy(&out.stdout).trim() == "true")
+    }
+
+    fn ax_snapshot(target: Option<&str>) -> Result<DesktopSnapshot, String> {
+        const SCRIPT: &str = r#"
+ObjC.import('stdlib');
+function env(name){ let p=$.getenv(name); return p ? ObjC.unwrap(p) : ''; }
+function safe(fn, fallback){ try { const v=fn(); return v === undefined ? fallback : v; } catch(e){ return fallback; } }
+const se=Application('System Events');
+const target=env('REFLEX_TARGET').toLowerCase();
+const procs=se.applicationProcesses();
+let process=null;
+for (const p of procs) {
+  const pn=String(safe(()=>p.name(),''));
+  const front=Boolean(safe(()=>p.frontmost(),false));
+  let hit=!target && front;
+  if(target && pn.toLowerCase().includes(target)) hit=true;
+  if(target && !hit) {
+    const ws=safe(()=>p.windows(),[]);
+    for(const w of ws){ if(String(safe(()=>w.name(),'')).toLowerCase().includes(target)){hit=true;break;} }
+  }
+  if(hit){process=p;break;}
+}
+if(!process) throw new Error(target ? 'target application/window not found' : 'no frontmost accessible process');
+const appName=String(safe(()=>process.name(),''));
+const wins=safe(()=>process.windows(),[]);
+const windows=[];
+const elements=[];
+let seq=0;
+function roleOf(el){ return String(safe(()=>el.role(), 'control')).replace(/^AX/,'').toLowerCase(); }
+function actionsFor(role){
+  if(['button','checkbox','radiobutton','menuitem','link'].includes(role)) return ['click','invoke'];
+  if(['textfield','textarea','combobox'].includes(role)) return ['type','read'];
+  if(['scrollarea','list','table'].includes(role)) return ['scroll','read'];
+  return ['read'];
+}
+function walk(el, depth, windowIndex){
+  if(depth>10 || elements.length>=600) return;
+  const role=roleOf(el);
+  const name=String(safe(()=>el.name(),''));
+  const value=safe(()=>el.value(), null);
+  const pos=safe(()=>el.position(), null);
+  const size=safe(()=>el.size(), null);
+  const enabled=Boolean(safe(()=>el.enabled(),true));
+  const focused=Boolean(safe(()=>el.focused(),false));
+  elements.push({
+    seq:seq++, role, name,
+    value:(typeof value==='string'||typeof value==='number'||typeof value==='boolean') ? String(value) : null,
+    x:pos&&pos.length>1?Number(pos[0]):0, y:pos&&pos.length>1?Number(pos[1]):0,
+    width:size&&size.length>1?Number(size[0]):0, height:size&&size.length>1?Number(size[1]):0,
+    enabled, focused, window_index:windowIndex, actions:actionsFor(role)
+  });
+  const children=safe(()=>el.uiElements(),[]);
+  for(const child of children) walk(child,depth+1,windowIndex);
+}
+for(let i=0;i<wins.length;i++){
+  const w=wins[i];
+  const title=String(safe(()=>w.name(),''));
+  const pos=safe(()=>w.position(),null), size=safe(()=>w.size(),null);
+  windows.push({index:i,title,app:appName,
+    x:pos&&pos.length>1?Number(pos[0]):0,y:pos&&pos.length>1?Number(pos[1]):0,
+    width:size&&size.length>1?Number(size[0]):0,height:size&&size.length>1?Number(size[1]):0,
+    focused:i===0,minimized:false});
+  walk(w,0,i);
+}
+JSON.stringify({app:appName,windows,elements});
+"#;
+        let output = run_jxa(SCRIPT, &[("REFLEX_TARGET", target.unwrap_or(""))])?;
+        let value: serde_json::Value =
+            serde_json::from_str(&output).map_err(|e| format!("macos-ax-json-invalid: {e}"))?;
+        let app = value.get("app").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let mut windows = Vec::new();
+        for w in value.get("windows").and_then(|v| v.as_array()).cloned().unwrap_or_default() {
+            let title=w.get("title").and_then(|v|v.as_str()).unwrap_or("").to_string();
+            windows.push(WindowInfo{
+                id:stable_id(&format!("window|{app}|{title}")),
+                title,
+                app:app.clone(),
+                bounds:Some(ElementBounds{
+                    x:w.get("x").and_then(|v|v.as_f64()).unwrap_or(0.0),
+                    y:w.get("y").and_then(|v|v.as_f64()).unwrap_or(0.0),
+                    width:w.get("width").and_then(|v|v.as_f64()).unwrap_or(0.0),
+                    height:w.get("height").and_then(|v|v.as_f64()).unwrap_or(0.0),
+                }),
+                is_focused:w.get("focused").and_then(|v|v.as_bool()).unwrap_or(false),
+                is_minimized:w.get("minimized").and_then(|v|v.as_bool()).unwrap_or(false),
+            });
+        }
+        let focused_window=windows.iter().find(|w|w.is_focused).cloned().or_else(||windows.first().cloned());
+        let mut elements=Vec::new();
+        for item in value.get("elements").and_then(|v|v.as_array()).cloned().unwrap_or_default() {
+            let role=item.get("role").and_then(|v|v.as_str()).unwrap_or("control").to_string();
+            let name=item.get("name").and_then(|v|v.as_str()).unwrap_or("").to_string();
+            let seq=item.get("seq").and_then(|v|v.as_u64()).unwrap_or(0);
+            let window_index=item.get("window_index").and_then(|v|v.as_u64()).unwrap_or(0) as usize;
+            let window_id=windows.get(window_index).map(|w|w.id);
+            let id=stable_id(&format!("element|{app}|{window_index}|{role}|{name}|{seq}"));
+            elements.push(DesktopElement{
+                id,role,name,
+                value:item.get("value").and_then(|v|v.as_str()).map(str::to_owned),
+                bounds:Some(ElementBounds{
+                    x:item.get("x").and_then(|v|v.as_f64()).unwrap_or(0.0),
+                    y:item.get("y").and_then(|v|v.as_f64()).unwrap_or(0.0),
+                    width:item.get("width").and_then(|v|v.as_f64()).unwrap_or(0.0),
+                    height:item.get("height").and_then(|v|v.as_f64()).unwrap_or(0.0),
+                }),
+                enabled:item.get("enabled").and_then(|v|v.as_bool()).unwrap_or(true),
+                focused:item.get("focused").and_then(|v|v.as_bool()).unwrap_or(false),
+                actions:item.get("actions").and_then(|v|v.as_array()).map(|a|a.iter().filter_map(|v|v.as_str().map(str::to_owned)).collect()).unwrap_or_default(),
+                context:Some(format!("ax|{app}|{window_index}|{seq}")),
+                window_id,
+            });
+        }
+        let generation=SNAPSHOT_GENERATION.fetch_add(1,Ordering::SeqCst);
+        let snapshot=DesktopSnapshot{active_app:Some(app),windows,focused_window,elements,generation};
+        cache_snapshot(snapshot.clone());
+        Ok(snapshot)
+    }
+
+    fn ax_action(element: &DesktopElement, action: &str, text: Option<&str>) -> Result<String,String> {
+        const SCRIPT: &str = r#"
+ObjC.import('stdlib');
+function env(name){let p=$.getenv(name);return p?ObjC.unwrap(p):'';}
+function safe(fn, fallback){try{const v=fn();return v===undefined?fallback:v;}catch(e){return fallback;}}
+const se=Application('System Events');
+const appName=env('REFLEX_APP'), targetName=env('REFLEX_NAME'), targetRole=env('REFLEX_ROLE');
+const procs=se.applicationProcesses.whose({name:appName})();
+if(!procs.length) throw new Error('application not running');
+function roleOf(el){return String(safe(()=>el.role(),'control')).replace(/^AX/,'').toLowerCase();}
+function find(el,depth){
+ if(depth>12) return null;
+ if(String(safe(()=>el.name(),''))===targetName && (!targetRole || roleOf(el)===targetRole)) return el;
+ const kids=safe(()=>el.uiElements(),[]);
+ for(const k of kids){const hit=find(k,depth+1);if(hit)return hit;}
+ return null;
+}
+let hit=null; for(const w of safe(()=>procs[0].windows(),[])){hit=find(w,0);if(hit)break;}
+if(!hit) throw new Error('element not found');
+const action=env('REFLEX_ACTION');
+if(action==='invoke'){try{hit.performAction('AXPress');}catch(e){hit.focused=true;se.keyCode(36);} 'ok';}
+else if(action==='type'){try{hit.value=env('REFLEX_TEXT');}catch(e){hit.focused=true;se.keystroke(env('REFLEX_TEXT'));} 'ok';}
+else if(action==='read'){JSON.stringify(String(safe(()=>hit.value(),safe(()=>hit.name(),''))));}
+else if(action==='scroll-up'||action==='scroll-down'){hit.focused=true;se.keyCode(action==='scroll-up'?116:121);'ok';}
+else throw new Error('unsupported action');
+"#;
+        let app=element.context.as_deref().and_then(|v|v.split('|').nth(1)).unwrap_or("");
+        run_jxa(SCRIPT,&[
+            ("REFLEX_APP",app),("REFLEX_NAME",element.name.as_str()),("REFLEX_ROLE",element.role.as_str()),
+            ("REFLEX_ACTION",action),("REFLEX_TEXT",text.unwrap_or(""))
+        ])
+    }
+
+    fn window_action(title_or_app: Option<&str>, action: &str) -> Result<WindowInfo,String> {
+        const SCRIPT:&str=r#"
+ObjC.import('stdlib'); function env(n){let p=$.getenv(n);return p?ObjC.unwrap(p):'';}
+function safe(fn,f){try{const v=fn();return v===undefined?f:v;}catch(e){return f;}}
+const se=Application('System Events'), q=env('REFLEX_QUERY').toLowerCase(), action=env('REFLEX_ACTION');
+for(const p of se.applicationProcesses()){
+ const app=String(safe(()=>p.name(),''));
+ const ws=safe(()=>p.windows(),[]);
+ for(const w of ws){
+   const title=String(safe(()=>w.name(),''));
+   if(app.toLowerCase().includes(q)||title.toLowerCase().includes(q)){
+     if(action==='focus'){p.frontmost=true;try{w.focused=true;}catch(e){}}
+     else if(action==='close'){try{w.performAction('AXClose');}catch(e){try{w.buttons.whose({subrole:'AXCloseButton'})()[0].performAction('AXPress');}catch(_) {throw e;}}}
+     const pos=safe(()=>w.position(),[0,0]),size=safe(()=>w.size(),[0,0]);
+     console.log(JSON.stringify({title,app,x:Number(pos[0]||0),y:Number(pos[1]||0),width:Number(size[0]||0),height:Number(size[1]||0)}));
+     $.exit(0);
+   }
+ }
+}
+throw new Error('window not found');
+"#;
+        let query=title_or_app.ok_or_else(||"invalid-args: macOS focus/close requires title_or_app".to_string())?;
+        let raw=run_jxa(SCRIPT,&[("REFLEX_QUERY",query),("REFLEX_ACTION",action)])?;
+        let v:serde_json::Value=serde_json::from_str(raw.lines().last().unwrap_or(&raw)).map_err(|e|format!("macos-window-json-invalid: {e}"))?;
+        let title=v.get("title").and_then(|v|v.as_str()).unwrap_or("").to_string();
+        let app=v.get("app").and_then(|v|v.as_str()).unwrap_or("").to_string();
+        Ok(WindowInfo{id:stable_id(&format!("window|{app}|{title}")),title,app,bounds:Some(ElementBounds{
+            x:v.get("x").and_then(|v|v.as_f64()).unwrap_or(0.0),y:v.get("y").and_then(|v|v.as_f64()).unwrap_or(0.0),
+            width:v.get("width").and_then(|v|v.as_f64()).unwrap_or(0.0),height:v.get("height").and_then(|v|v.as_f64()).unwrap_or(0.0)
+        }),is_focused:action=="focus",is_minimized:false})
+    }
 
     impl DesktopBackend for MacosBackend {
         fn health(&self) -> DesktopHealth {
-            DesktopHealth {
-                healthy: false,
-                platform: "macos",
-                permissions_granted: false,
-                details: "macOS AX backend is not linked in this build; no action will be reported as successful".into(),
-                recovery_instructions: Some(
-                    "Install a build with the native AX adapter, then grant Accessibility permission in System Settings > Privacy & Security > Accessibility."
-                        .into(),
-                ),
+            let granted=ax_enabled();
+            DesktopHealth{
+                healthy:granted,platform:"macos",permissions_granted:granted,
+                details:if granted{"macOS Accessibility semantic adapter available through System Events/AX".into()}else{"macOS Accessibility permission is not granted".into()},
+                recovery_instructions:if granted{None}else{Some("Grant ReflexDesk Accessibility permission in System Settings > Privacy & Security > Accessibility, then restart ReflexDesk.".into())},
             }
         }
-
-        fn inspect(&self, _target_window: Option<&str>) -> Result<DesktopSnapshot, String> {
-            Err("desktop-backend-unavailable: native macOS AX adapter is not linked".into())
+        fn inspect(&self,target_window:Option<&str>)->Result<DesktopSnapshot,String>{
+            if !ax_enabled(){return Err("permission-required: macOS Accessibility permission is not granted".into());}
+            ax_snapshot(target_window)
         }
-
-        fn focus_window(
-            &self,
-            _window_id: Option<u64>,
-            _title_or_app: Option<&str>,
-        ) -> Result<WindowInfo, String> {
-            Err("desktop-backend-unavailable: native macOS AX focus is not linked".into())
+        fn focus_window(&self,_window_id:Option<u64>,title_or_app:Option<&str>)->Result<WindowInfo,String>{window_action(title_or_app,"focus")}
+        fn close_window(&self,_window_id:Option<u64>,title_or_app:Option<&str>)->Result<(),String>{window_action(title_or_app,"close").map(|_|())}
+        fn invoke_element(&self,element:&DesktopElement,_action:&str)->Result<(),String>{ax_action(element,"invoke",None).map(|_|())}
+        fn click_element(&self,element:&DesktopElement)->Result<(),String>{ax_action(element,"invoke",None).map(|_|())}
+        fn type_element(&self,element:&DesktopElement,text:&str,_clear_first:bool)->Result<(),String>{ax_action(element,"type",Some(text)).map(|_|())}
+        fn press_key(&self,key:&str,modifiers:&[&str])->Result<(),String>{
+            const SCRIPT:&str=r#"ObjC.import('stdlib');function env(n){let p=$.getenv(n);return p?ObjC.unwrap(p):'';}const se=Application('System Events');const k=env('REFLEX_KEY').toLowerCase();const mods=env('REFLEX_MODS').split(',').filter(Boolean);const map={enter:36,return:36,tab:48,escape:53,esc:53,space:49,backspace:51,delete:117,up:126,down:125,left:123,right:124};if(map[k]!==undefined){se.keyCode(map[k],{using:mods.map(x=>x+' down')});}else if(k.length===1){se.keystroke(k,{using:mods.map(x=>x+' down')});}else{throw new Error('unsupported key');}"#;
+            let normalized:Vec<String>=modifiers.iter().map(|m|match m.to_lowercase().as_str(){"ctrl"|"control"=>"control","alt"|"option"=>"option","shift"=>"shift","cmd"|"command"|"meta"=>"command",_=>*m}.to_string()).collect();
+            run_jxa(SCRIPT,&[("REFLEX_KEY",key),("REFLEX_MODS",&normalized.join(","))]).map(|_|())
         }
-
-        fn close_window(
-            &self,
-            _window_id: Option<u64>,
-            _title_or_app: Option<&str>,
-        ) -> Result<(), String> {
-            Err("desktop-backend-unavailable: native macOS AX close is not linked".into())
-        }
-
-        fn invoke_element(&self, _element: &DesktopElement, _action: &str) -> Result<(), String> {
-            Err("desktop-backend-unavailable: native macOS AX invoke is not linked".into())
-        }
-
-        fn click_element(&self, _element: &DesktopElement) -> Result<(), String> {
-            Err("desktop-backend-unavailable: native macOS AX click is not linked".into())
-        }
-
-        fn type_element(
-            &self,
-            _element: &DesktopElement,
-            _text: &str,
-            _clear_first: bool,
-        ) -> Result<(), String> {
-            Err("desktop-backend-unavailable: native macOS AX value setting is not linked".into())
-        }
-
-        fn press_key(&self, _key: &str, _modifiers: &[&str]) -> Result<(), String> {
-            Err("desktop-backend-unavailable: native macOS keyboard adapter is not linked".into())
-        }
-
-        fn scroll_element(
-            &self,
-            _element: &DesktopElement,
-            _direction: &str,
-            _amount: f64,
-        ) -> Result<(), String> {
-            Err("desktop-backend-unavailable: native macOS AX scroll is not linked".into())
-        }
-
-        fn read_element(&self, _element: &DesktopElement) -> Result<String, String> {
-            Err("desktop-backend-unavailable: native macOS AX read is not linked".into())
-        }
+        fn scroll_element(&self,element:&DesktopElement,direction:&str,_amount:f64)->Result<(),String>{ax_action(element,if direction.eq_ignore_ascii_case("up"){"scroll-up"}else{"scroll-down"},None).map(|_|())}
+        fn read_element(&self,element:&DesktopElement)->Result<String,String>{let raw=ax_action(element,"read",None)?;Ok(serde_json::from_str::<String>(&raw).unwrap_or(raw))}
     }
 }
 
@@ -1012,88 +1435,264 @@ mod linux_backend {
     use super::*;
 
     pub struct LinuxBackend;
+    const ATSPI_ID_MASK:u64=0x4000_0000_0000_0000;
 
-    impl DesktopBackend for LinuxBackend {
-        fn health(&self) -> DesktopHealth {
-            let at_spi_present = std::path::Path::new("/run/user")
-                .join(std::env::var("UID").unwrap_or_else(|_| "1000".into()))
-                .join("at-spi/bus")
-                .exists()
-                || std::env::var("AT_SPI_BUS_ADDRESS").is_ok();
+    fn stable_id(parts:&str)->u64{
+        use std::hash::{Hash,Hasher};
+        let mut h=std::collections::hash_map::DefaultHasher::new();
+        parts.hash(&mut h);
+        ATSPI_ID_MASK|(h.finish()&0x0fff_ffff_ffff_ffff)
+    }
 
-            DesktopHealth {
-                healthy: false,
-                platform: "linux",
-                permissions_granted: at_spi_present,
-                details: if at_spi_present {
-                    "Linux AT-SPI2 bus is active, but the native semantic adapter is not linked in this build".into()
-                } else {
-                    "Linux AT-SPI2 bus is not detected and the native semantic adapter is not linked".into()
-                },
-                recovery_instructions: Some(
-                    "Install a build with the native AT-SPI adapter; if needed enable accessibility with: gsettings set org.gnome.desktop.interface toolkit-accessibility true"
-                        .into(),
-                ),
-            }
+    fn run_python(script:&str,envs:&[(&str,&str)])->Result<String,String>{
+        let mut command=std::process::Command::new("python3");
+        command.args(["-c",script]);
+        for(key,value) in envs{command.env(key,value);}
+        let output=command.output().map_err(|e|format!("atspi-python-unavailable: {e}"))?;
+        if !output.status.success(){
+            return Err(format!("atspi-error: {}",String::from_utf8_lossy(&output.stderr).trim()));
         }
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    }
 
-        fn inspect(&self, _target_window: Option<&str>) -> Result<DesktopSnapshot, String> {
-            let health = self.health();
-            Err(format!(
-                "desktop-backend-unavailable: AT-SPI semantic adapter is not linked. Recovery: {}",
-                health.recovery_instructions.unwrap_or_default()
-            ))
-        }
+    fn atspi_runtime_ready()->bool{
+        std::process::Command::new("python3")
+            .args(["-c","import pyatspi; d=pyatspi.Registry.getDesktop(0); assert d is not None"])
+            .output()
+            .map(|o|o.status.success())
+            .unwrap_or(false)
+    }
 
-        fn focus_window(
-            &self,
-            _window_id: Option<u64>,
-            _title_or_app: Option<&str>,
-        ) -> Result<WindowInfo, String> {
-            Err("unsupported-platform: AT-SPI window focus requires active X11 or Wayland compositor".into())
+    fn atspi_snapshot(target:Option<&str>)->Result<DesktopSnapshot,String>{
+        const SCRIPT:&str=r#"
+import json, os, pyatspi
+target=os.environ.get('REFLEX_TARGET','').lower()
+desktop=pyatspi.Registry.getDesktop(0)
+apps=[]
+for i in range(desktop.childCount):
+    try: apps.append(desktop.getChildAtIndex(i))
+    except Exception: pass
+def has_state(obj,state):
+    try:return obj.getState().contains(state)
+    except Exception:return False
+chosen=None
+for app in apps:
+    name=str(getattr(app,'name','') or '')
+    hit=target and target in name.lower()
+    if not target:
+        for j in range(getattr(app,'childCount',0)):
+            try:
+                w=app.getChildAtIndex(j)
+                if has_state(w,pyatspi.STATE_ACTIVE) or has_state(w,pyatspi.STATE_FOCUSED):
+                    hit=True;break
+            except Exception:pass
+    if target and not hit:
+        for j in range(getattr(app,'childCount',0)):
+            try:
+                w=app.getChildAtIndex(j)
+                if target in str(getattr(w,'name','') or '').lower(): hit=True;break
+            except Exception:pass
+    if hit: chosen=app;break
+if chosen is None: raise RuntimeError('no matching accessible application')
+app_name=str(getattr(chosen,'name','') or '')
+windows=[]; elements=[]; seq=0
+def bounds(obj):
+    try:
+        e=obj.queryComponent().getExtents(pyatspi.DESKTOP_COORDS)
+        return [float(e.x),float(e.y),float(e.width),float(e.height)]
+    except Exception:return [0.0,0.0,0.0,0.0]
+def actions(obj):
+    out=[]
+    try:
+        a=obj.queryAction()
+        for i in range(a.nActions):
+            name=str(a.getName(i) or '').lower()
+            if name: out.append(name)
+        if out: out+=['invoke','click']
+    except Exception:pass
+    try: obj.queryEditableText(); out+=['type','read']
+    except Exception:pass
+    return list(dict.fromkeys(out or ['read']))
+def walk(obj,depth,wi):
+    global seq
+    if depth>12 or len(elements)>=600:return
+    try:
+        role=str(obj.getRoleName() or 'control').lower()
+        name=str(getattr(obj,'name','') or '')
+        x,y,w,h=bounds(obj)
+        value=None
+        try:value=str(obj.queryValue().currentValue)
+        except Exception:
+            try:value=str(obj.queryText().getText(0,-1))
+            except Exception:pass
+        elements.append({'seq':seq,'role':role,'name':name,'value':value,'x':x,'y':y,'width':w,'height':h,
+          'enabled':has_state(obj,pyatspi.STATE_ENABLED),'focused':has_state(obj,pyatspi.STATE_FOCUSED),'window_index':wi,'actions':actions(obj)})
+        seq+=1
+        for i in range(getattr(obj,'childCount',0)):
+            try:walk(obj.getChildAtIndex(i),depth+1,wi)
+            except Exception:pass
+    except Exception:pass
+for wi in range(getattr(chosen,'childCount',0)):
+    try:
+        w=chosen.getChildAtIndex(wi)
+        title=str(getattr(w,'name','') or '')
+        x,y,ww,hh=bounds(w)
+        active=has_state(w,pyatspi.STATE_ACTIVE) or has_state(w,pyatspi.STATE_FOCUSED)
+        windows.append({'index':wi,'title':title,'app':app_name,'x':x,'y':y,'width':ww,'height':hh,'focused':active,'minimized':False})
+        walk(w,0,wi)
+    except Exception:pass
+print(json.dumps({'app':app_name,'windows':windows,'elements':elements},separators=(',',':')))
+"#;
+        let raw=run_python(SCRIPT,&[("REFLEX_TARGET",target.unwrap_or(""))])?;
+        let value:serde_json::Value=serde_json::from_str(&raw).map_err(|e|format!("atspi-json-invalid: {e}"))?;
+        let app=value.get("app").and_then(|v|v.as_str()).unwrap_or("").to_string();
+        let mut windows=Vec::new();
+        for w in value.get("windows").and_then(|v|v.as_array()).cloned().unwrap_or_default(){
+            let title=w.get("title").and_then(|v|v.as_str()).unwrap_or("").to_string();
+            windows.push(WindowInfo{id:stable_id(&format!("window|{app}|{title}")),title,app:app.clone(),
+                bounds:Some(ElementBounds{x:w.get("x").and_then(|v|v.as_f64()).unwrap_or(0.0),y:w.get("y").and_then(|v|v.as_f64()).unwrap_or(0.0),
+                    width:w.get("width").and_then(|v|v.as_f64()).unwrap_or(0.0),height:w.get("height").and_then(|v|v.as_f64()).unwrap_or(0.0)}),
+                is_focused:w.get("focused").and_then(|v|v.as_bool()).unwrap_or(false),is_minimized:false});
         }
+        let focused_window=windows.iter().find(|w|w.is_focused).cloned().or_else(||windows.first().cloned());
+        let mut elements=Vec::new();
+        for item in value.get("elements").and_then(|v|v.as_array()).cloned().unwrap_or_default(){
+            let role=item.get("role").and_then(|v|v.as_str()).unwrap_or("control").to_string();
+            let name=item.get("name").and_then(|v|v.as_str()).unwrap_or("").to_string();
+            let seq=item.get("seq").and_then(|v|v.as_u64()).unwrap_or(0);
+            let wi=item.get("window_index").and_then(|v|v.as_u64()).unwrap_or(0) as usize;
+            elements.push(DesktopElement{id:stable_id(&format!("element|{app}|{wi}|{role}|{name}|{seq}")),role,name,
+                value:item.get("value").and_then(|v|v.as_str()).map(str::to_owned),
+                bounds:Some(ElementBounds{x:item.get("x").and_then(|v|v.as_f64()).unwrap_or(0.0),y:item.get("y").and_then(|v|v.as_f64()).unwrap_or(0.0),
+                    width:item.get("width").and_then(|v|v.as_f64()).unwrap_or(0.0),height:item.get("height").and_then(|v|v.as_f64()).unwrap_or(0.0)}),
+                enabled:item.get("enabled").and_then(|v|v.as_bool()).unwrap_or(true),focused:item.get("focused").and_then(|v|v.as_bool()).unwrap_or(false),
+                actions:item.get("actions").and_then(|v|v.as_array()).map(|a|a.iter().filter_map(|v|v.as_str().map(str::to_owned)).collect()).unwrap_or_default(),
+                context:Some(format!("atspi|{app}|{wi}|{seq}")),window_id:windows.get(wi).map(|w|w.id)});
+        }
+        let generation=SNAPSHOT_GENERATION.fetch_add(1,Ordering::SeqCst);
+        let snapshot=DesktopSnapshot{active_app:Some(app),windows,focused_window,elements,generation};
+        cache_snapshot(snapshot.clone());
+        Ok(snapshot)
+    }
 
-        fn close_window(
-            &self,
-            _window_id: Option<u64>,
-            _title_or_app: Option<&str>,
-        ) -> Result<(), String> {
-            Err("unsupported-platform: AT-SPI window close requires active X11 or Wayland compositor".into())
-        }
+    fn atspi_action(element:&DesktopElement,action:&str,text:Option<&str>)->Result<String,String>{
+        const SCRIPT:&str=r#"
+import json,os,pyatspi
+app_name=os.environ.get('REFLEX_APP',''); target_name=os.environ.get('REFLEX_NAME',''); target_role=os.environ.get('REFLEX_ROLE','').lower()
+desktop=pyatspi.Registry.getDesktop(0); app=None
+for i in range(desktop.childCount):
+    x=desktop.getChildAtIndex(i)
+    if str(getattr(x,'name','') or '')==app_name: app=x;break
+if app is None: raise RuntimeError('application not found')
+def find(obj,depth=0):
+    if depth>14:return None
+    try:
+        if str(getattr(obj,'name','') or '')==target_name and (not target_role or str(obj.getRoleName() or '').lower()==target_role): return obj
+    except Exception:pass
+    for i in range(getattr(obj,'childCount',0)):
+        try:
+            hit=find(obj.getChildAtIndex(i),depth+1)
+            if hit:return hit
+        except Exception:pass
+    return None
+el=find(app)
+if el is None: raise RuntimeError('element not found')
+action=os.environ.get('REFLEX_ACTION','')
+if action=='invoke':
+    done=False
+    try:
+        ai=el.queryAction()
+        preferred=['click','press','activate','toggle','select']
+        for preferred_name in preferred:
+            for i in range(ai.nActions):
+                if preferred_name in str(ai.getName(i) or '').lower():
+                    if ai.doAction(i): done=True
+                    break
+            if done:break
+    except Exception:pass
+    if not done:
+        try: done=bool(el.queryComponent().grabFocus())
+        except Exception:pass
+    if not done: raise RuntimeError('no invokable AT-SPI action')
+    print('ok')
+elif action=='type':
+    t=os.environ.get('REFLEX_TEXT','')
+    try: el.queryEditableText().setTextContents(t)
+    except Exception as e: raise RuntimeError('editable text unavailable: '+str(e))
+    print('ok')
+elif action=='read':
+    value=''
+    try:value=str(el.queryText().getText(0,-1))
+    except Exception:
+        try:value=str(el.queryValue().currentValue)
+        except Exception:value=str(getattr(el,'name','') or '')
+    print(json.dumps(value))
+elif action in ('scroll-up','scroll-down'):
+    try: el.queryComponent().grabFocus()
+    except Exception:pass
+    sym='Page_Up' if action=='scroll-up' else 'Page_Down'
+    pyatspi.Registry.generateKeyboardEvent(0,sym,pyatspi.KEY_SYM)
+    print('ok')
+else: raise RuntimeError('unsupported action')
+"#;
+        let app=element.context.as_deref().and_then(|v|v.split('|').nth(1)).unwrap_or("");
+        run_python(SCRIPT,&[("REFLEX_APP",app),("REFLEX_NAME",element.name.as_str()),("REFLEX_ROLE",element.role.as_str()),("REFLEX_ACTION",action),("REFLEX_TEXT",text.unwrap_or(""))])
+    }
 
-        fn invoke_element(&self, _element: &DesktopElement, _action: &str) -> Result<(), String> {
-            Err("unsupported-platform: AT-SPI element invoke not supported in headless mode".into())
-        }
+    fn focus_or_close(query:&str,action:&str)->Result<WindowInfo,String>{
+        const SCRIPT:&str=r#"
+import json,os,pyatspi
+q=os.environ.get('REFLEX_QUERY','').lower(); action=os.environ.get('REFLEX_ACTION','')
+d=pyatspi.Registry.getDesktop(0)
+def bounds(o):
+ try:
+  e=o.queryComponent().getExtents(pyatspi.DESKTOP_COORDS);return [e.x,e.y,e.width,e.height]
+ except Exception:return [0,0,0,0]
+for ai in range(d.childCount):
+ app=d.getChildAtIndex(ai); an=str(getattr(app,'name','') or '')
+ for wi in range(getattr(app,'childCount',0)):
+  w=app.getChildAtIndex(wi); title=str(getattr(w,'name','') or '')
+  if q in an.lower() or q in title.lower():
+   if action=='focus':
+    if not w.queryComponent().grabFocus(): raise RuntimeError('window focus rejected')
+   elif action=='close':
+    a=w.queryAction();done=False
+    for i in range(a.nActions):
+     if 'close' in str(a.getName(i) or '').lower(): done=bool(a.doAction(i));break
+    if not done: raise RuntimeError('window has no close action')
+   x,y,ww,hh=bounds(w);print(json.dumps({'title':title,'app':an,'x':x,'y':y,'width':ww,'height':hh}));raise SystemExit(0)
+raise RuntimeError('window not found')
+"#;
+        let raw=run_python(SCRIPT,&[("REFLEX_QUERY",query),("REFLEX_ACTION",action)])?;
+        let v:serde_json::Value=serde_json::from_str(raw.lines().last().unwrap_or(&raw)).map_err(|e|format!("atspi-window-json-invalid: {e}"))?;
+        let title=v.get("title").and_then(|v|v.as_str()).unwrap_or("").to_string();
+        let app=v.get("app").and_then(|v|v.as_str()).unwrap_or("").to_string();
+        Ok(WindowInfo{id:stable_id(&format!("window|{app}|{title}")),title,app,bounds:Some(ElementBounds{
+            x:v.get("x").and_then(|v|v.as_f64()).unwrap_or(0.0),y:v.get("y").and_then(|v|v.as_f64()).unwrap_or(0.0),
+            width:v.get("width").and_then(|v|v.as_f64()).unwrap_or(0.0),height:v.get("height").and_then(|v|v.as_f64()).unwrap_or(0.0)}),
+            is_focused:action=="focus",is_minimized:false})
+    }
 
-        fn click_element(&self, _element: &DesktopElement) -> Result<(), String> {
-            Err("unsupported-platform: AT-SPI click not supported in headless mode".into())
+    impl DesktopBackend for LinuxBackend{
+        fn health(&self)->DesktopHealth{
+            let bus_present=std::env::var("AT_SPI_BUS_ADDRESS").is_ok()||std::env::var("DBUS_SESSION_BUS_ADDRESS").is_ok();
+            let runtime=bus_present&&atspi_runtime_ready();
+            DesktopHealth{healthy:runtime,platform:"linux",permissions_granted:bus_present,
+                details:if runtime{"Linux AT-SPI semantic adapter available".into()}else{"AT-SPI runtime is unavailable in this desktop session".into()},
+                recovery_instructions:if runtime{None}else{Some("Enable desktop accessibility and install the distro AT-SPI Python binding (for example python3-pyatspi), then restart ReflexDesk.".into())}}
         }
-
-        fn type_element(
-            &self,
-            _element: &DesktopElement,
-            _text: &str,
-            _clear_first: bool,
-        ) -> Result<(), String> {
-            Err("unsupported-platform: AT-SPI typing not supported in headless mode".into())
+        fn inspect(&self,target:Option<&str>)->Result<DesktopSnapshot,String>{if !atspi_runtime_ready(){return Err("desktop-backend-unavailable: python3-pyatspi/AT-SPI session unavailable".into());}atspi_snapshot(target)}
+        fn focus_window(&self,_window_id:Option<u64>,title_or_app:Option<&str>)->Result<WindowInfo,String>{focus_or_close(title_or_app.ok_or_else(||"invalid-args: focus requires title_or_app".to_string())?,"focus")}
+        fn close_window(&self,_window_id:Option<u64>,title_or_app:Option<&str>)->Result<(),String>{focus_or_close(title_or_app.ok_or_else(||"invalid-args: close requires title_or_app".to_string())?,"close").map(|_|())}
+        fn invoke_element(&self,e:&DesktopElement,_action:&str)->Result<(),String>{atspi_action(e,"invoke",None).map(|_|())}
+        fn click_element(&self,e:&DesktopElement)->Result<(),String>{atspi_action(e,"invoke",None).map(|_|())}
+        fn type_element(&self,e:&DesktopElement,text:&str,_clear_first:bool)->Result<(),String>{atspi_action(e,"type",Some(text)).map(|_|())}
+        fn press_key(&self,key:&str,_modifiers:&[&str])->Result<(),String>{
+            const SCRIPT:&str=r#"import os,pyatspi;k=os.environ.get('REFLEX_KEY','');m={'enter':'Return','return':'Return','tab':'Tab','escape':'Escape','esc':'Escape','space':'space','backspace':'BackSpace','delete':'Delete','up':'Up','down':'Down','left':'Left','right':'Right'};sym=m.get(k.lower(),k);pyatspi.Registry.generateKeyboardEvent(0,sym,pyatspi.KEY_SYM)"#;
+            run_python(SCRIPT,&[("REFLEX_KEY",key)]).map(|_|())
         }
-
-        fn press_key(&self, _key: &str, _modifiers: &[&str]) -> Result<(), String> {
-            Err("unsupported-platform: AT-SPI key press not supported in headless mode".into())
-        }
-
-        fn scroll_element(
-            &self,
-            _element: &DesktopElement,
-            _direction: &str,
-            _amount: f64,
-        ) -> Result<(), String> {
-            Err("unsupported-platform: AT-SPI scroll not supported in headless mode".into())
-        }
-
-        fn read_element(&self, _element: &DesktopElement) -> Result<String, String> {
-            Err("desktop-backend-unavailable: AT-SPI semantic read adapter is not linked".into())
-        }
+        fn scroll_element(&self,e:&DesktopElement,direction:&str,_amount:f64)->Result<(),String>{atspi_action(e,if direction.eq_ignore_ascii_case("up"){"scroll-up"}else{"scroll-down"},None).map(|_|())}
+        fn read_element(&self,e:&DesktopElement)->Result<String,String>{let raw=atspi_action(e,"read",None)?;Ok(serde_json::from_str::<String>(&raw).unwrap_or(raw))}
     }
 }
 

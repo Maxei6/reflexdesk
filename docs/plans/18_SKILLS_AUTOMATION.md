@@ -1,7 +1,7 @@
 # Plan 18 — Reusable local skills
 
 **Priority:** P2  
-**Status:** ACCEPTANCE PENDING  
+**Status:** CODE COMPLETE (ACCEPTANCE PENDING)
 **Depends on:** control engine + policy + verification
 
 ## Objective

@@ -3,8 +3,10 @@
 //! Provides channel selection (nightly/beta/stable), embedded public-key
 //! verification, anti-downgrade enforcement, staged rollout cohort calculation,
 //! verified artifact staging, and transaction coordination with `ModelManager`.
-//! Installer activation and rollback are intentionally unavailable until the
-//! signed platform updater is wired end to end.
+//! Signed artifacts are staged before platform activation. Windows preview/stable
+//! installers can be launched from verified staging and the current executable is
+//! backed up for deferred rollback. Stable release still fails closed without
+//! production signing/notarization credentials.
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
@@ -19,7 +21,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Mutex,
     },
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 static UPDATE_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
@@ -116,6 +118,37 @@ pub enum UpdateStatus {
     },
 }
 
+
+/// Metadata persisted before installer activation so a failed update can be
+/// rolled back after the currently running process exits.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RollbackMetadata {
+    pub previous_version: String,
+    pub target_version: String,
+    pub original_executable: String,
+    pub backup_executable: String,
+    pub staged_installer: String,
+    pub created_at_unix_ms: u128,
+}
+
+/// Result of launching a verified platform installer.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActivationResult {
+    pub target_version: String,
+    pub installer_path: String,
+    pub rollback_available: bool,
+    pub launch_method: String,
+    pub requires_app_exit: bool,
+}
+
+/// Result of scheduling a rollback helper.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RollbackResult {
+    pub target_version: String,
+    pub helper_path: String,
+    pub restore_path: String,
+    pub requires_app_exit: bool,
+}
 
 /// Platform artifact metadata in the release manifest.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -462,9 +495,29 @@ impl UpdaterService {
         let part = self
             .staging_dir()
             .join(format!("reflexdesk-{}.part", update.target_version));
-        let ready = self
-            .staging_dir()
-            .join(format!("reflexdesk-{}.verified", update.target_version));
+        let source_name = parsed
+            .path_segments()
+            .and_then(|segments| segments.filter(|s| !s.is_empty()).last())
+            .unwrap_or("reflexdesk-update.bin");
+        let safe_name = source_name
+            .chars()
+            .map(|ch| {
+                if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_') {
+                    ch
+                } else {
+                    '_'
+                }
+            })
+            .collect::<String>();
+        let safe_name = if safe_name.is_empty() {
+            "reflexdesk-update.bin".to_string()
+        } else {
+            safe_name
+        };
+        let ready = self.staging_dir().join(format!(
+            "reflexdesk-{}-{}",
+            update.target_version, safe_name
+        ));
         let mut response = reqwest::blocking::Client::builder()
             .timeout(Duration::from_secs(600))
             .build()
@@ -565,6 +618,257 @@ impl UpdaterService {
             }
         }
     }
+    fn rollback_metadata_path(&self) -> PathBuf {
+        self.backup_dir().join("rollback.json")
+    }
+
+    fn write_rollback_metadata(
+        &self,
+        target_version: &str,
+        staged_installer: &Path,
+    ) -> Result<Option<RollbackMetadata>, String> {
+        let current_exe = std::env::current_exe()
+            .map_err(|e| format!("failed to resolve current executable: {e}"))?;
+        if !current_exe.is_file() {
+            return Ok(None);
+        }
+        fs::create_dir_all(self.backup_dir())
+            .map_err(|e| format!("failed to create rollback directory: {e}"))?;
+        let backup = self.backup_dir().join(format!(
+            "reflexdesk-{}-backup{}",
+            env!("CARGO_PKG_VERSION"),
+            current_exe
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .map(|ext| format!(".{ext}"))
+                .unwrap_or_default()
+        ));
+        fs::copy(&current_exe, &backup)
+            .map_err(|e| format!("failed to create rollback executable backup: {e}"))?;
+        File::open(&backup)
+            .and_then(|file| file.sync_all())
+            .map_err(|e| format!("failed to sync rollback executable backup: {e}"))?;
+        let created_at_unix_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        let metadata = RollbackMetadata {
+            previous_version: env!("CARGO_PKG_VERSION").to_string(),
+            target_version: target_version.to_string(),
+            original_executable: current_exe.display().to_string(),
+            backup_executable: backup.display().to_string(),
+            staged_installer: staged_installer.display().to_string(),
+            created_at_unix_ms,
+        };
+        let encoded = serde_json::to_vec_pretty(&metadata)
+            .map_err(|e| format!("failed to encode rollback metadata: {e}"))?;
+        let part = self.backup_dir().join("rollback.json.part");
+        fs::write(&part, encoded)
+            .map_err(|e| format!("failed to write rollback metadata: {e}"))?;
+        File::open(&part)
+            .and_then(|file| file.sync_all())
+            .map_err(|e| format!("failed to sync rollback metadata: {e}"))?;
+        fs::rename(&part, self.rollback_metadata_path())
+            .map_err(|e| format!("failed to activate rollback metadata: {e}"))?;
+        Ok(Some(metadata))
+    }
+
+    fn validate_staged_path(&self, staged: &Path) -> Result<PathBuf, String> {
+        let staging_root = fs::canonicalize(self.staging_dir())
+            .map_err(|e| format!("failed to resolve update staging directory: {e}"))?;
+        let canonical = fs::canonicalize(staged)
+            .map_err(|e| format!("failed to resolve staged installer: {e}"))?;
+        if !canonical.starts_with(&staging_root) || !canonical.is_file() {
+            return Err("staged update path escaped the verified staging directory".into());
+        }
+        Ok(canonical)
+    }
+
+    /// Launch a cryptographically verified staged installer. The explicit
+    /// policy confirmation happens before this method is called.
+    pub fn activate_staged(
+        &self,
+        target_version: &str,
+        model_manager: &crate::model_manager::ModelManager,
+    ) -> Result<ActivationResult, String> {
+        self.check_can_update(model_manager)?;
+        let staged = match self.get_status() {
+            UpdateStatus::Staged {
+                target_version: version,
+                staged_path,
+            } if version == target_version => PathBuf::from(staged_path),
+            UpdateStatus::Staged { .. } => {
+                return Err("requested update does not match staged release".into())
+            }
+            _ => return Err("no verified staged update is available to activate".into()),
+        };
+        let staged = self.validate_staged_path(&staged)?;
+        let rollback_available = self
+            .write_rollback_metadata(target_version, &staged)?
+            .is_some();
+
+        #[cfg(target_os = "windows")]
+        let launch_method = {
+            use std::process::Command;
+            let ext = staged
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            match ext.as_str() {
+                "exe" => {
+                    Command::new(&staged)
+                        .spawn()
+                        .map_err(|e| format!("failed to launch verified update installer: {e}"))?;
+                    "windows-exe".to_string()
+                }
+                "msi" => {
+                    Command::new("msiexec.exe")
+                        .arg("/i")
+                        .arg(&staged)
+                        .spawn()
+                        .map_err(|e| format!("failed to launch verified MSI update: {e}"))?;
+                    "windows-msi".to_string()
+                }
+                _ => {
+                    return Err(format!(
+                        "unsupported Windows update installer extension: {ext}"
+                    ))
+                }
+            }
+        };
+
+        #[cfg(target_os = "macos")]
+        let launch_method = {
+            std::process::Command::new("/usr/bin/open")
+                .arg(&staged)
+                .spawn()
+                .map_err(|e| format!("failed to open verified macOS update artifact: {e}"))?;
+            "macos-open".to_string()
+        };
+
+        #[cfg(target_os = "linux")]
+        let launch_method = {
+            let ext = staged
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            if ext == "appimage" {
+                use std::os::unix::fs::PermissionsExt;
+                let mut permissions = fs::metadata(&staged)
+                    .map_err(|e| format!("failed reading AppImage permissions: {e}"))?
+                    .permissions();
+                permissions.set_mode(permissions.mode() | 0o700);
+                fs::set_permissions(&staged, permissions)
+                    .map_err(|e| format!("failed making AppImage executable: {e}"))?;
+                std::process::Command::new(&staged)
+                    .spawn()
+                    .map_err(|e| format!("failed launching verified AppImage: {e}"))?;
+                "linux-appimage".to_string()
+            } else {
+                std::process::Command::new("xdg-open")
+                    .arg(&staged)
+                    .spawn()
+                    .map_err(|e| format!("failed opening verified Linux package: {e}"))?;
+                "linux-package-open".to_string()
+            }
+        };
+
+        #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+        let launch_method: String =
+            return Err("update activation is unsupported on this platform".into());
+
+        Ok(ActivationResult {
+            target_version: target_version.to_string(),
+            installer_path: staged.display().to_string(),
+            rollback_available,
+            launch_method,
+            requires_app_exit: true,
+        })
+    }
+
+    pub fn rollback_metadata(&self) -> Result<RollbackMetadata, String> {
+        let bytes = fs::read(self.rollback_metadata_path())
+            .map_err(|e| format!("no rollback metadata available: {e}"))?;
+        serde_json::from_slice(&bytes)
+            .map_err(|e| format!("rollback metadata is invalid: {e}"))
+    }
+
+    /// Schedule a small OS helper that waits for ReflexDesk to exit, restores
+    /// the backed-up executable, and starts the restored binary.
+    pub fn schedule_rollback(&self) -> Result<RollbackResult, String> {
+        if is_update_in_progress() {
+            return Err("cannot schedule rollback while an update transaction is active".into());
+        }
+        let metadata = self.rollback_metadata()?;
+        let original = fs::canonicalize(&metadata.original_executable)
+            .unwrap_or_else(|_| PathBuf::from(&metadata.original_executable));
+        let backup = fs::canonicalize(&metadata.backup_executable)
+            .map_err(|e| format!("rollback executable backup is unavailable: {e}"))?;
+        let backup_root = fs::canonicalize(self.backup_dir())
+            .map_err(|e| format!("rollback directory is unavailable: {e}"))?;
+        if !backup.starts_with(&backup_root) || !backup.is_file() {
+            return Err("rollback backup escaped the managed rollback directory".into());
+        }
+        let pid = std::process::id();
+
+        #[cfg(target_os = "windows")]
+        let helper = {
+            let helper = self.backup_dir().join("rollback-reflexdesk.cmd");
+            let script = format!(
+                "@echo off\r\n:wait\r\ntasklist /FI \"PID eq {pid}\" 2>NUL | find \"{pid}\" >NUL\r\nif not errorlevel 1 (timeout /t 1 /nobreak >NUL & goto wait)\r\ncopy /Y \"{}\" \"{}\" >NUL\r\nstart \"\" \"{}\"\r\ndel \"%~f0\"\r\n",
+                backup.display(),
+                original.display(),
+                original.display()
+            );
+            fs::write(&helper, script)
+                .map_err(|e| format!("failed to create rollback helper: {e}"))?;
+            std::process::Command::new("cmd.exe")
+                .args(["/C", "start", "", "/B"])
+                .arg(&helper)
+                .spawn()
+                .map_err(|e| format!("failed to launch rollback helper: {e}"))?;
+            helper
+        };
+
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        let helper = {
+            use std::os::unix::fs::PermissionsExt;
+            let helper = self.backup_dir().join("rollback-reflexdesk.sh");
+            let script = format!(
+                "#!/bin/sh\nwhile kill -0 {pid} 2>/dev/null; do sleep 1; done\ncp -f '{}' '{}'\nchmod +x '{}'\n'{}' >/dev/null 2>&1 &\nrm -- \"$0\"\n",
+                backup.display(),
+                original.display(),
+                original.display(),
+                original.display()
+            );
+            fs::write(&helper, script)
+                .map_err(|e| format!("failed to create rollback helper: {e}"))?;
+            let mut permissions = fs::metadata(&helper)
+                .map_err(|e| format!("failed reading rollback helper permissions: {e}"))?
+                .permissions();
+            permissions.set_mode(0o700);
+            fs::set_permissions(&helper, permissions)
+                .map_err(|e| format!("failed securing rollback helper: {e}"))?;
+            std::process::Command::new(&helper)
+                .spawn()
+                .map_err(|e| format!("failed to launch rollback helper: {e}"))?;
+            helper
+        };
+
+        #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+        let helper: PathBuf =
+            return Err("rollback is unsupported on this platform".into());
+
+        Ok(RollbackResult {
+            target_version: metadata.previous_version,
+            helper_path: helper.display().to_string(),
+            restore_path: original.display().to_string(),
+            requires_app_exit: true,
+        })
+    }
+
     pub fn check_now(
         &self,
         model_manager: &crate::model_manager::ModelManager,

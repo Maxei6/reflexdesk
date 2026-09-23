@@ -1,7 +1,7 @@
 # Plan 04 — Turnkey local planner
 
 **Priority:** P1  
-**Status:** ACCEPTANCE PENDING  
+**Status:** CODE COMPLETE (ACCEPTANCE PENDING)  
 **Depends on:** policy/action schemas
 
 ## Objective
@@ -52,11 +52,13 @@ cannot bypass schemas/policy.
 
 - **Adapter trait:** `src-tauri/src/planner.rs` implements `LocalPlanner` with `health()`, `capabilities()`, `plan()`, `cancel()`, and `unload()`. The planner only plans; execution is strictly delegated to the policy gate via `ActionEnvelope`.
 - **Benchmark corpus:** `tests/fixtures/planner/corpus.jsonl` contains 34 realistic ReflexDesk tasks across tool selection, argument validation, multi-step flows, multilingual tasks (Italian, Spanish, French, German, Portuguese), ambiguous out-of-scope requests, and adversarial prompt injections.
-- **Hardware tiers:** `models/registry.json` updated with low (`spark-x2.5-compact`), mid (`spark-x2.5`), high (`spark-x2.5-pro`), and flexible (`local-openai-compatible`) tier metadata.
+- **Baseline planner:** `BuiltinPlanner` is compiled into ReflexDesk and is always available on a fresh install. It handles high-confidence app opening, browser navigation/search, desktop focus, explicit agent delegation, and explicit multi-step sequencing without any model server or endpoint.
+- **Registry cleanup:** placeholder low/mid/high planner checkpoints with no real artifact identity were removed. `models/registry.json` now declares the built-in planner as the default and keeps the OpenAI-compatible local endpoint only as an optional escalation interface.
 - **Runtime backends:**
-  - `CrispAsrChatPlanner`: native compact GGUF runtime adapter with lazy loading, 5-minute idle timeout unload, and deterministic weights preflight.
-  - `OpenAiCompatibleLocalPlanner`: loopback HTTP adapter with strict offline consent validation (`allow_remote` + persisted `allow_online_ai` gates).
+  - `BuiltinPlanner`: zero-configuration deterministic baseline; it only emits schema-validated `ActionEnvelope` values and never executes directly.
+  - `OpenAiCompatibleLocalPlanner`: optional loopback/approved endpoint adapter for requests outside the deterministic grammar, with consent and endpoint policy gates.
+  - The previous `CrispAsrChatPlanner` seam remains fail-closed unless real planner weights/runtime are provisioned; it is no longer presented as the fresh-install default.
 - **Constrained output & repair:** `repair_and_parse_json` strips markdown code blocks and repairs truncated braces/quotes. Any parse or validation failure maps strictly to `unknown` action envelope with no execution.
 - **Context budgeter:** `PlannerContext::budgeted_text` caps desktop accessibility and browser semantic state to 4k tokens (~16k characters), truncating at UTF-8 boundaries.
 - **Privacy & Redaction:** Prompts route through `crate::redaction::redact_text` prior to any logging or diagnostic emission.
-- **Fresh install behavior:** With no local model or external server running, health check returns `false` and calls yield `planner-unavailable` without erroring setup, ensuring the deterministic reflex router remains the primary zero-dependency baseline.
+- **Fresh install behavior:** planner health is true with no external runtime. Ordinary explicit multi-step commands are planned locally. Ambiguous requests fail closed with `planner-needs-model` unless an optional model backend is healthy; no request can bypass schema validation or the policy gate.

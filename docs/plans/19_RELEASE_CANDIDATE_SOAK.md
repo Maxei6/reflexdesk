@@ -1,7 +1,7 @@
 # Plan 19 — Release candidate soak
 
 **Priority:** RELEASE BLOCKER  
-**Status:** IN PROGRESS / BLOCKED ON HARDWARE
+**Status:** IMPLEMENTED / RELEASE VALIDATION BLOCKED ON HARDWARE + CREDENTIALS
 
 ## Objective
 
@@ -91,8 +91,8 @@ commit SHA.
    - Structured registry tracking exit criteria blockers:
      - `BLK-001`: Multi-OS 72-hour physical fleet hardware soak (`BLOCKED_ON_HARDWARE`).
      - `BLK-002`: Production code signing and notarization credentials (`BLOCKED_ON_CREDENTIALS`).
-     - `BLK-003`: Cross-platform semantic desktop adapters (`OPEN`).
-     - `BLK-004`: Signed updater activation and rollback (`OPEN`).
+     - `BLK-003`: Cross-platform semantic desktop adapters (`ACCEPTANCE_PENDING`; code complete).
+     - `BLK-004`: Signed updater activation and rollback (`ACCEPTANCE_PENDING`; code complete).
    - Tracks known limitations (LIM-001 for HTTP loopback STT seam, LIM-002 for local planner fallback).
    - Exit criteria remain false until all code, hardware, and credential blockers resolve.
 
@@ -134,7 +134,5 @@ commit SHA.
 
 - **Multi-day physical hardware soak**: Running continuous 24h and 72h soak cycles across the physical fleet matrix (Apple Silicon M-series, low-end CPU-only x86, NVIDIA discrete GPU, physical Bluetooth headsets, and ACPI sleep transitions) requires physical machines. In local workstation and virtual CI environments, this remains `BLOCKED ON HARDWARE` (tracked in `BLK-001`). All metrics remain `null`.
 - **Signed and notarized release artifacts**: Verification of signed binaries and updater staging depends on production certificates and keys from Plan 17 (tracked in `BLK-002` as `BLOCKED_ON_CREDENTIALS`).
-- **Semantic desktop adapters**: Plan 02 remains partial until Windows UIA,
-  macOS AX, and Linux AT-SPI adapters pass representative live tasks (`BLK-003`).
-- **Updater activation and rollback**: cryptographic staging is implemented, but
-  a signed installer activation/recovery path is still required (`BLK-004`).
+- **Semantic desktop adapters**: Windows UIA + Win32 fallback, macOS Accessibility/AX, and Linux AT-SPI code paths are implemented. Physical representative tasks remain a release-acceptance gate (`BLK-003`).
+- **Updater activation and rollback**: verified installer activation, executable backup metadata, and deferred rollback helpers are implemented. Production-signed clean-machine install/rollback drills remain a release-acceptance gate (`BLK-004`).
