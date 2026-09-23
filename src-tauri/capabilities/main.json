@@ -19,6 +19,7 @@
     "core:window:allow-monitor-from-point",
     "core:window:allow-primary-monitor",
     "core:window:allow-outer-size",
+    "allow-main-runtime",
     "allow-request-action",
     "allow-confirm-action",
     "allow-cancel-session",

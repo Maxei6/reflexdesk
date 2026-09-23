@@ -16,6 +16,7 @@
     "core:window:allow-monitor-from-point",
     "core:window:allow-primary-monitor",
     "core:window:allow-outer-size",
+    "allow-overlay-runtime",
     "allow-stt-transcribe",
     "allow-transcript-nonce",
     "allow-submit-transcript",

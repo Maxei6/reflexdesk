@@ -11,6 +11,39 @@
 # Neither window can reach the other's commands, so a compromised renderer
 # cannot quit the app, approve confirmations, or forge transcripts.
 
+
+[[permission]]
+identifier = "allow-main-runtime"
+description = "Use the main dashboard runtime, settings, model, routing, and status commands."
+commands.allow = [
+    "get_runtime_status",
+    "get_app_settings",
+    "save_app_settings",
+    "get_autostart",
+    "prepare_engine",
+    "complete_setup",
+    "reset_setup",
+    "get_model_status",
+    "get_model_cache_size",
+    "repair_model",
+    "get_system_profile",
+    "set_listening",
+    "toggle_listening",
+    "laya_route",
+    "reflex_route",
+    "get_reflex_health",
+    "planner_route",
+    "planner_health",
+    "planner_status",
+    "detect_harnesses",
+    "stt_status",
+    "open_settings",
+]
+
+[[permission]]
+identifier = "allow-overlay-runtime"
+description = "Use only the runtime controls required by the listening overlay."
+commands.allow = ["prepare_engine", "set_listening", "stt_status"]
 [[permission]]
 identifier = "allow-request-action"
 description = "Submit a policy-gated ActionEnvelope for execution (main window only)."
