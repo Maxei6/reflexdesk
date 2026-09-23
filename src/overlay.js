@@ -47,6 +47,20 @@ function settings() {
   );
 }
 
+function recognitionLanguage(voice) {
+  return voice.secondaryLanguage && voice.secondaryLanguage !== "none"
+    ? "auto"
+    : voice.language || "auto";
+}
+
+// Engines that consume raw microphone audio from this overlay. The local
+// Nemotron path and the opt-in OpenRouter path share the same capture, silence
+// detection, and nonce-gated submission; only Rust decides which one runs.
+function usesStreamingCapture(voice) {
+  const provider = (voice && voice.sttProvider) || "nemotron";
+  return provider === "nemotron" || provider === "openrouter";
+}
+
 function applyVisualPreference() {
   root.classList.toggle("visual-disabled", settings().overlayEnabled === false);
 }
@@ -197,7 +211,7 @@ function finalizeNemotronUtterance() {
   resetUtterance();
 
   transcriptionQueue = transcriptionQueue.then(async function () {
-    if (!active || voice.sttProvider !== "nemotron") return;
+    if (!active || !usesStreamingCapture(voice)) return;
 
     stateText.textContent = "TRANSCRIBING";
     setVisualState("transcribing");
@@ -211,19 +225,23 @@ function finalizeNemotronUtterance() {
           nonce: nonce,
           samples: samples,
           sampleRate: TARGET_RATE,
-          language: voice.language || "auto",
+          language: recognitionLanguage(voice),
           partialHint: null,
           isFinal: true,
         });
         if (streamResult && streamResult.transcript) {
           result = streamResult.transcript;
         }
-      } catch {
-        // Fallback directly to HTTP utterance path
+      } catch (streamError) {
+        // Remote transcription is never retried here: a second attempt would
+        // duplicate a billed request, and a cloud failure must surface instead
+        // of being papered over by a different engine.
+        if (voice.sttProvider === "openrouter") throw streamError;
+        // Local fallback: the authenticated loopback HTTP utterance path.
         result = await invoke("stt_transcribe", {
           samples: samples,
           sampleRate: TARGET_RATE,
-          language: voice.language || "auto",
+          language: recognitionLanguage(voice),
         });
       }
       if (!active) return;
@@ -256,7 +274,7 @@ function finalizeNemotronUtterance() {
 }
 
 function processNemotronFrame(input, inputRate, rms) {
-  if (!active || !nemotronReady || settings().sttProvider !== "nemotron") return;
+  if (!active || !nemotronReady || !usesStreamingCapture(settings())) return;
 
   const pcm = resampleTo16k(input, inputRate);
   const now = performance.now();
@@ -447,6 +465,27 @@ async function ensureNemotron() {
   }
 }
 
+// Remote transcription needs no local model or runtime, but it does need an
+// explicit opt-in plus a connected key. Report the gap instead of pretending
+// the microphone can already be transcribed.
+async function ensureRemoteStt() {
+  nemotronReady = true;
+  stateText.textContent = "LISTENING";
+  setVisualState("listening");
+
+  try {
+    const status = await invoke("stt_status");
+    if (!status.ready) {
+      setVisualState(
+        "error",
+        "Online AI is off or no OpenRouter key is connected. Enable it in ReflexDesk settings.",
+      );
+    }
+  } catch {
+    setVisualState("error", "Cloud speech is unavailable.");
+  }
+}
+
 async function ensureStt() {
   const provider = settings().sttProvider || "nemotron";
 
@@ -458,6 +497,11 @@ async function ensureStt() {
 
   if (provider === "moonshine") {
     await ensureMoonshine();
+    return;
+  }
+
+  if (provider === "openrouter") {
+    await ensureRemoteStt();
     return;
   }
 

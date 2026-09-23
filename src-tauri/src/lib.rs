@@ -6,6 +6,7 @@ mod harness;
 mod lifecycle;
 mod model_manager;
 pub mod observability;
+pub mod openrouter;
 pub mod planner;
 mod policy;
 mod process;
@@ -113,6 +114,19 @@ fn set_listening_internal(app: &AppHandle, next: bool) -> Result<RuntimeSnapshot
         let app_settings = app.state::<SettingsState>().snapshot();
         let requires_native_stt = app_settings.stt_provider == "nemotron";
 
+        // Remote speech needs an explicit opt-in and a connected key. Report it
+        // before the microphone opens instead of failing per utterance.
+        if app_settings.setup_complete && app_settings.stt_uses_openrouter() {
+            if let Err(reason) = openrouter::check_speech_ready(&app_settings) {
+                show_main(app);
+                let _ = app.emit(
+                    "reflexdesk://attention",
+                    serde_json::json!({ "kind": "online_speech_not_ready", "message": reason }),
+                );
+                return Err(reason);
+            }
+        }
+
         if !current.ready && (!app_settings.setup_complete || requires_native_stt) {
             show_main(app);
             let _ = app.emit(
@@ -159,6 +173,15 @@ fn start_engine_background(app: AppHandle) {
         phase,
         Phase::Preparing | Phase::Ready | Phase::Listening | Phase::ShuttingDown
     ) {
+        return;
+    }
+
+    // First-run proof is always local (docs/P0.md): remote speech only becomes
+    // selectable after setup completed, and only from then on can the local
+    // model cache and CrispASR runtime be skipped entirely.
+    let settings = app.state::<SettingsState>().snapshot();
+    if settings.setup_complete && settings.stt_uses_openrouter() {
+        let _ = update_runtime(&app, Phase::Ready, None);
         return;
     }
 
@@ -318,7 +341,19 @@ fn save_app_settings(
     state: State<'_, SettingsState>,
     mut settings: AppSettings,
 ) -> Result<AppSettings, String> {
+    if !security::SUPPORTED_LANGUAGES.contains(&settings.language.as_str()) {
+        return Err("unsupported-language: primary speech language".into());
+    }
+    if settings.secondary_language != "none"
+        && (settings.secondary_language == settings.language
+            || settings.language == "auto"
+            || settings.secondary_language == "auto"
+            || !security::SUPPORTED_LANGUAGES.contains(&settings.secondary_language.as_str()))
+    {
+        return Err("unsupported-language: secondary speech language".into());
+    }
     settings.schema_version = settings::SETTINGS_SCHEMA_VERSION;
+    settings.normalize();
     let previous = state.snapshot();
     settings::save(&app, &settings)?;
     state.replace(settings.clone())?;
@@ -489,6 +524,7 @@ fn execute_verified(
     settings: &AppSettings,
     envelope: &policy::ActionEnvelope,
     raw_text: Option<&str>,
+    confirmed: bool,
 ) -> policy::ActionExecutionResult {
     let denied = |reason: String| {
         let redacted_reason = redaction::redact_error(&reason);
@@ -511,8 +547,20 @@ fn execute_verified(
         }
     };
 
-    // 1. Policy decision: validation, negation, authorization, pre-cancel.
-    let sanitized_args =
+    // A confirmed envelope comes only from the single-use Rust confirmation
+    // store, where its arguments were already validated. Revalidate before
+    // execution, but do not issue a second confirmation for the same action.
+    let sanitized_args = if confirmed {
+        match policy::authorize(envelope, settings) {
+            policy::PolicyOutcome::Deny => return denied("policy-denied".into()),
+            policy::PolicyOutcome::RequireUnlock => return denied("require-unlock".into()),
+            policy::PolicyOutcome::Allow | policy::PolicyOutcome::Confirm => {}
+        }
+        match policy::validate_args(&envelope.tool, &envelope.args) {
+            Ok(args) => args,
+            Err(reason) => return denied(reason),
+        }
+    } else {
         match policy::decide_and_prepare_with_settings(envelope, raw_text, settings) {
             policy::PolicyDecision::Denied { reason } => return denied(reason),
             policy::PolicyDecision::NeedConfirm {
@@ -540,7 +588,8 @@ fn execute_verified(
                 };
             }
             policy::PolicyDecision::ExecuteNow { sanitized_args } => sanitized_args,
-        };
+        }
+    };
 
     // 2. Pre-execution cancellation check.
     if policy::is_cancelled(&envelope.session_id) {
@@ -652,6 +701,7 @@ fn request_action(
         &settings,
         &envelope,
         raw_text.as_deref(),
+        false,
     ))
 }
 
@@ -676,6 +726,7 @@ fn confirm_action(
             &settings,
             &envelope,
             None,
+            true,
         )),
         None => Ok(policy::ActionExecutionResult {
             status: "deny".into(),
@@ -939,22 +990,93 @@ fn detect_harnesses() -> Vec<harness::HarnessStatus> {
     harness::detect_all()
 }
 
+/// Credential targets the OS vault accepts.
+///
+/// The renderer names one of these; arbitrary strings are rejected so a
+/// compromised renderer cannot invent a credential namespace or overwrite an
+/// unrelated vault entry.
+const PROVIDER_PLANNER: &str = "planner";
+const PROVIDER_OPENROUTER: &str = "openrouter";
+
+fn provider_kind(provider: &str) -> Result<&'static str, String> {
+    match provider.trim() {
+        "planner" => Ok(PROVIDER_PLANNER),
+        "openrouter" => Ok(PROVIDER_OPENROUTER),
+        other => Err(format!(
+            "unsupported-provider: '{other}' is not a supported credential target"
+        )),
+    }
+}
+
+/// Endpoint probed when verifying a stored credential.
+///
+/// OpenRouter is pinned to its documented API base so a stored OpenRouter key
+/// can never be pointed at, or leaked to, a different host. The planner keeps
+/// its configurable loopback/remote endpoint.
+fn provider_probe_endpoint(app: &AppHandle, provider: &str) -> String {
+    if provider == PROVIDER_OPENROUTER {
+        openrouter::API_BASE.to_string()
+    } else {
+        app.state::<SettingsState>().snapshot().planner_endpoint
+    }
+}
+
+fn provider_secret_ref(settings: &AppSettings, provider: &str) -> Option<secrets::SecretRef> {
+    if provider == PROVIDER_OPENROUTER {
+        settings.openrouter_secret_ref.clone()
+    } else {
+        settings.planner_secret_ref.clone()
+    }
+}
+
+fn assign_provider_secret_ref(
+    settings: &mut AppSettings,
+    provider: &str,
+    secret_ref: Option<secrets::SecretRef>,
+) {
+    if provider == PROVIDER_OPENROUTER {
+        settings.openrouter_secret_ref = secret_ref;
+    } else {
+        settings.planner_secret_ref = secret_ref;
+    }
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn disconnected_provider(provider: &str, message: &str) -> secrets::ProviderConnectionStatus {
+    secrets::ProviderConnectionStatus {
+        provider: provider.to_string(),
+        connected: false,
+        secret_id: None,
+        updated_at_ts: None,
+        last_status: "disconnected".into(),
+        message: message.to_string(),
+    }
+}
+
 #[tauri::command]
 fn connect_provider(
     app: AppHandle,
     provider: String,
     api_key: String,
 ) -> Result<secrets::ProviderConnectionStatus, String> {
-    if api_key.trim().is_empty() {
+    let provider = provider_kind(&provider)?;
+    let api_key = api_key.trim();
+    if api_key.is_empty() {
         return Err("API key cannot be empty".into());
     }
 
     let secret_store = app.state::<secrets::AppSecretStore>();
-    let sref = secret_store.0.set(&provider, api_key.as_bytes())?;
+    let sref = secret_store.0.set(provider, api_key.as_bytes())?;
 
     let settings_state = app.state::<SettingsState>();
     let mut current = settings_state.snapshot();
-    current.planner_secret_ref = Some(sref.clone());
+    assign_provider_secret_ref(&mut current, provider, Some(sref.clone()));
     settings::save(&app, &current)?;
     settings_state.replace(current.clone())?;
 
@@ -962,21 +1084,17 @@ fn connect_provider(
 
     let secret_bytes = secret_store.0.get(&sref)?;
     let status = secrets::test_provider_connection(
-        &current.planner_endpoint,
+        provider,
+        &provider_probe_endpoint(&app, provider),
         &secret_bytes,
         current.allow_online_ai,
     );
 
     Ok(secrets::ProviderConnectionStatus {
-        provider,
-        connected: status.last_status != "auth-invalid",
+        provider: provider.to_string(),
+        connected: status.last_status == "connected",
         secret_id: Some(sref.id),
-        updated_at_ts: Some(
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0),
-        ),
+        updated_at_ts: Some(now_secs()),
         last_status: status.last_status,
         message: status.message,
     })
@@ -987,39 +1105,29 @@ fn test_provider(
     app: AppHandle,
     provider: String,
 ) -> Result<secrets::ProviderConnectionStatus, String> {
+    let provider = provider_kind(&provider)?;
     let settings = app.state::<SettingsState>().snapshot();
-    let sref = match &settings.planner_secret_ref {
-        Some(r) => r.clone(),
-        None => {
-            return Ok(secrets::ProviderConnectionStatus {
-                provider,
-                connected: false,
-                secret_id: None,
-                updated_at_ts: None,
-                last_status: "disconnected".into(),
-                message: "No provider credentials configured in SecretStore".into(),
-            });
-        }
+    let Some(sref) = provider_secret_ref(&settings, provider) else {
+        return Ok(disconnected_provider(
+            provider,
+            "No provider credentials configured in SecretStore",
+        ));
     };
 
     let secret_store = app.state::<secrets::AppSecretStore>();
     let secret_bytes = secret_store.0.get(&sref)?;
     let status = secrets::test_provider_connection(
-        &settings.planner_endpoint,
+        provider,
+        &provider_probe_endpoint(&app, provider),
         &secret_bytes,
         settings.allow_online_ai,
     );
 
     Ok(secrets::ProviderConnectionStatus {
-        provider,
-        connected: status.last_status != "auth-invalid",
+        provider: provider.to_string(),
+        connected: status.last_status == "connected",
         secret_id: Some(sref.id),
-        updated_at_ts: Some(
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0),
-        ),
+        updated_at_ts: Some(now_secs()),
         last_status: status.last_status,
         message: status.message,
     })
@@ -1030,25 +1138,23 @@ fn disconnect_provider(
     app: AppHandle,
     provider: String,
 ) -> Result<secrets::ProviderConnectionStatus, String> {
+    let provider = provider_kind(&provider)?;
     let settings_state = app.state::<SettingsState>();
     let mut current = settings_state.snapshot();
 
-    if let Some(sref) = current.planner_secret_ref.take() {
+    if let Some(sref) = provider_secret_ref(&current, provider) {
         let secret_store = app.state::<secrets::AppSecretStore>();
         let _ = secret_store.0.delete(&sref);
+        assign_provider_secret_ref(&mut current, provider, None);
         settings::save(&app, &current)?;
         settings_state.replace(current.clone())?;
         let _ = app.emit("reflexdesk://settings", &current);
     }
 
-    Ok(secrets::ProviderConnectionStatus {
+    Ok(disconnected_provider(
         provider,
-        connected: false,
-        secret_id: None,
-        updated_at_ts: None,
-        last_status: "disconnected".into(),
-        message: "Provider disconnected and secret deleted from vault".into(),
-    })
+        "Provider disconnected and secret deleted from vault",
+    ))
 }
 
 #[tauri::command]
@@ -1056,26 +1162,44 @@ fn get_provider_status(
     app: AppHandle,
     provider: String,
 ) -> Result<secrets::ProviderConnectionStatus, String> {
+    let provider = provider_kind(&provider)?;
     let settings = app.state::<SettingsState>().snapshot();
-    let secret_id = settings.planner_secret_ref.as_ref().map(|r| r.id.clone());
-    let connected = secret_id.is_some();
+    let Some(sref) = provider_secret_ref(&settings, provider) else {
+        return Ok(disconnected_provider(provider, "No credentials stored"));
+    };
 
     Ok(secrets::ProviderConnectionStatus {
-        provider,
-        connected,
-        secret_id,
+        provider: provider.to_string(),
+        connected: true,
+        secret_id: Some(sref.id),
         updated_at_ts: None,
-        last_status: if connected {
-            "connected".into()
-        } else {
-            "disconnected".into()
-        },
-        message: if connected {
-            "Provider credentials configured in vault".into()
-        } else {
-            "No credentials stored".into()
-        },
+        last_status: "connected".into(),
+        message: "Provider credentials configured in vault".into(),
     })
+}
+
+/// Synthesizes a spoken reply through OpenRouter.
+///
+/// Only used when the user selected OpenRouter for text-to-speech; the vault key
+/// never leaves Rust and the returned MP3 is size- and type-bounded.
+#[tauri::command]
+fn tts_speak(app: AppHandle, text: String) -> Result<openrouter::SpeechAudio, String> {
+    let settings = app.state::<SettingsState>().snapshot();
+    if !settings.tts_uses_openrouter() {
+        return Err(
+            "local-tts-selected: spoken replies are using the offline voice".into(),
+        );
+    }
+
+    let api_key = openrouter::api_key(&app, &settings)?;
+    openrouter::synthesize_at(
+        openrouter::API_BASE,
+        &api_key,
+        &settings.openrouter_tts_model,
+        &settings.openrouter_tts_voice,
+        &text,
+        settings.allow_online_ai,
+    )
 }
 
 #[tauri::command]
@@ -1255,7 +1379,7 @@ fn execute_skill(
     let settings = settings_state.snapshot();
 
     let runner = |envelope: &policy::ActionEnvelope| -> policy::ActionExecutionResult {
-        execute_verified(&app, &runtime, &supervisor, &settings, envelope, None)
+        execute_verified(&app, &runtime, &supervisor, &settings, envelope, None, false)
     };
 
     Ok(skills::execute_skill(&skill, user_inputs, &sess, &runner))
@@ -1451,6 +1575,7 @@ pub fn run() {
             stt_stream_chunk,
             stt_cancel_stream,
             stt_baseline_metrics,
+            tts_speak,
             get_diagnostics_preview,
             export_diagnostics,
             quit_app,

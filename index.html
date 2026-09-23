@@ -29,6 +29,9 @@
               <div class="step-content">
                 <label for="setupLanguage" data-i18n="onboarding.step1_title">Your main language</label>
                 <select id="setupLanguage" class="control"></select>
+                <label for="setupSecondaryLanguage" data-i18n="settings.secondary_language_label">Second spoken language</label>
+                <select id="setupSecondaryLanguage" class="control"></select>
+                <p data-i18n="settings.secondary_language_help">Optional. Enables automatic language detection for speech.</p>
                 <p data-i18n="onboarding.step1_desc">ReflexDesk can auto-detect speech, but choosing your main language makes the first experience more predictable.</p>
               </div>
             </div>
@@ -84,211 +87,299 @@
               <span data-i18n="brand.tagline">Your computer, with reflexes.</span>
             </div>
           </div>
-          <div id="statusPill" class="status-pill"><span></span><b>Starting</b></div>
+          <div id="statusPill" class="status-pill" role="status" aria-live="polite"><span></span><b>Starting</b></div>
         </header>
 
-        <section class="listen-card">
-          <div>
-            <span class="kicker" data-i18n="dashboard.kicker">VOICE CONTROL</span>
-            <h1 id="dashboardHeadline">ReflexDesk is preparing.</h1>
-            <p id="dashboardSubline">Your local speech engine starts in the background.</p>
-          </div>
-          <button id="listenButton" class="talk-button" type="button" disabled>
-            <span class="talk-dot"></span>
-            <b>Preparing…</b>
-          </button>
-        </section>
+        <div class="workspace-pane">
+          <div class="workspace-content">
 
-        <div id="attentionBanner" class="attention hidden">
-          <div>
-            <strong id="attentionTitle" data-i18n="dashboard.attention_title">ReflexDesk needs attention</strong>
-            <span id="attentionText"></span>
-          </div>
-          <button id="retryEngine" class="secondary" type="button" data-i18n="dashboard.attention_retry">Retry</button>
-        </div>
+            <section class="listen-card" aria-labelledby="dashboardHeadline">
+              <div class="listen-copy">
+                <span class="kicker" data-i18n="dashboard.kicker">VOICE CONTROL</span>
+                <h1 id="dashboardHeadline">ReflexDesk is preparing.</h1>
+                <p id="dashboardSubline">Your local speech engine starts in the background.</p>
+              </div>
+              <button id="listenButton" class="talk-button" type="button" disabled>
+                <span class="talk-dot"></span>
+                <b>Preparing…</b>
+              </button>
+            </section>
 
-        <section class="settings-card">
-          <div class="section-title">
-            <div>
-              <h2 data-i18n="settings.general_title">General</h2>
-              <p data-i18n="settings.general_subtitle">The things you'll actually change.</p>
-            </div>
-          </div>
-
-          <div class="setting-line">
-            <div>
-              <strong data-i18n="settings.ui_language_label">Interface language</strong>
-              <span data-i18n="settings.ui_language_help">Controls application text and messages.</span>
-            </div>
-            <select id="uiLocale" class="inline-control"></select>
-          </div>
-
-          <div class="setting-line">
-            <div>
-              <strong data-i18n="settings.language_label">Speech language</strong>
-              <span data-i18n="settings.language_help">Used for local voice recognition.</span>
-            </div>
-            <select id="language" class="inline-control"></select>
-          </div>
-
-          <div class="setting-line">
-            <div>
-              <strong data-i18n="settings.start_at_login_label">Start at login</strong>
-              <span data-i18n="settings.start_at_login_help">Keep ReflexDesk ready without opening a window.</span>
-            </div>
-            <label class="switch"><input id="startAtLogin" type="checkbox"><span></span></label>
-          </div>
-
-          <div class="setting-line">
-            <div>
-              <strong data-i18n="settings.overlay_label">Reflex animation</strong>
-              <span data-i18n="settings.overlay_help">Show the small voice-reactive particle indicator.</span>
-            </div>
-            <label class="switch"><input id="overlayEnabled" type="checkbox"><span></span></label>
-          </div>
-
-          <div class="setting-line">
-            <div>
-              <strong data-i18n="settings.shortcut_label">Shortcut</strong>
-              <span data-i18n="settings.shortcut_help">Press anywhere to start or stop listening.</span>
-            </div>
-            <kbd id="shortcutKey">Ctrl/Cmd + Shift + Space</kbd>
-          </div>
-        </section>
-
-        <section class="settings-card">
-          <div class="section-title">
-            <div>
-              <h2 data-i18n="privacy.title">Privacy</h2>
-              <p data-i18n="privacy.subtitle">Local by default.</p>
-            </div>
-            <span class="local-badge" data-i18n="privacy.on_device_badge">● ON DEVICE</span>
-          </div>
-
-          <div class="setting-line">
-            <div>
-              <strong data-i18n="privacy.allow_online_ai_label">Allow online AI fallback</strong>
-              <span data-i18n="privacy.allow_online_ai_help">Off means ReflexDesk blocks remote planner endpoints.</span>
-            </div>
-            <label class="switch"><input id="allowOnlineAi" type="checkbox"><span></span></label>
-          </div>
-        </section>
-
-        <section class="settings-card" id="providerCard">
-          <div class="section-title">
-            <div>
-              <h2 data-i18n="provider.title">Online Provider</h2>
-              <p data-i18n="provider.subtitle">Credentials stored securely in OS vault — never in settings or logs.</p>
-            </div>
-            <span id="providerStatusBadge" class="local-badge">Disconnected</span>
-          </div>
-
-          <div class="setting-line" id="providerKeyLine">
-            <div>
-              <strong data-i18n="provider.api_key_label">Provider API key</strong>
-              <span id="providerKeyHelp" data-i18n="provider.api_key_help">Enter key to connect or rotate credentials.</span>
-            </div>
-            <div class="provider-key-controls">
-              <input id="providerApiKey" type="password" class="control" placeholder="sk-…" autocomplete="new-password">
-            </div>
-          </div>
-
-          <div class="provider-actions">
-            <button id="connectProvider" class="secondary-button" type="button" data-i18n="provider.connect_button">Connect</button>
-            <button id="testProvider" class="text-button" type="button" disabled data-i18n="provider.test_button">Test</button>
-            <button id="disconnectProvider" class="danger-ghost" type="button" disabled data-i18n="provider.disconnect_button">Disconnect</button>
-          </div>
-          <p id="providerStatusMessage" class="provider-status-msg"></p>
-        </section>
-
-        <section class="settings-card">
-          <div class="section-title">
-            <div>
-              <h2 data-i18n="agents.title">AI agents</h2>
-              <p data-i18n="agents.subtitle">ReflexDesk can hand larger jobs to tools already installed.</p>
-            </div>
-            <button id="refreshHarnesses" class="text-button" type="button" data-i18n="agents.refresh">Refresh</button>
-          </div>
-          <div id="harnessList" class="agent-grid"><span class="muted">Checking…</span></div>
-        </section>
-
-        <section class="settings-card" id="skillsCard">
-          <div class="section-title">
-            <div>
-              <h2 data-i18n="skills.title">Skills &amp; Automations</h2>
-              <p data-i18n="skills.subtitle">Deterministic multi-step workflows without unrestricted machine access.</p>
-            </div>
-            <div class="skills-card-actions">
-              <button id="refreshSkills" class="text-button" type="button" data-i18n="skills.refresh">Refresh</button>
-              <button id="toggleSkillRecording" class="secondary-button compact-btn" type="button" data-i18n="skills.record_start">Record</button>
-            </div>
-          </div>
-          <div id="skillRecordingNotice" class="hidden provider-status-msg" data-i18n="skills.recording_active"></div>
-          <div id="skillsList" class="agent-grid"><span class="muted" data-i18n="skills.empty">Loading skills…</span></div>
-        </section>
-
-        <details class="advanced-card">
-          <summary>
-            <span data-i18n="advanced.title">Advanced</span>
-            <small data-i18n="advanced.subtitle">Models, endpoints and diagnostics</small>
-          </summary>
-          <div class="advanced-content">
-            <div class="advanced-grid">
-              <label><span data-i18n="advanced.speech_engine">Speech engine</span>
-                <select id="sttProvider" class="control">
-                  <option value="nemotron">NVIDIA Nemotron 3.5</option>
-                  <option value="moonshine">Moonshine fallback</option>
-                  <option value="manual">Manual test mode</option>
-                </select>
-              </label>
-
-              <label><span data-i18n="advanced.laya_endpoint">Laya endpoint</span>
-                <input id="layaEndpoint" type="text" class="control">
-              </label>
-
-              <label><span data-i18n="advanced.planner_endpoint">Planner endpoint</span>
-                <input id="plannerEndpoint" type="text" class="control">
-              </label>
-
-              <label><span data-i18n="advanced.planner_model">Planner model</span>
-                <input id="plannerModel" type="text" class="control">
-              </label>
-            </div>
-
-            <div class="diagnostics">
-              <div><span data-i18n="advanced.diag_system">System</span><b id="systemInfo">Loading…</b></div>
-              <div><span data-i18n="advanced.diag_benchmark">Speech benchmark</span><b id="benchmarkInfo">Not measured</b></div>
-              <div><span data-i18n="advanced.diag_engine">Engine</span><b id="engineInfo">Checking…</b></div>
-              <div><span data-i18n="advanced.diag_model_backend">Model backend</span><b id="modelBackendInfo">Nemotron 3.5 Q4_K (local GGUF)</b></div>
-              <div><span data-i18n="advanced.diag_model_cache">Model cache</span><b id="modelCacheInfo">Calculating…</b></div>
+            <div id="attentionBanner" class="attention hidden" role="alert">
               <div>
-                <span data-i18n="advanced.diag_bundle">Diagnostics bundle</span>
-                <div class="diagnostics-btn-group">
-                  <button id="previewDiagnostics" class="secondary-button compact-btn" type="button" data-i18n="advanced.diag_preview_btn">Preview</button>
-                  <button id="exportDiagnostics" class="secondary-button compact-btn" type="button" data-i18n="advanced.diag_export_btn">Export</button>
+                <strong id="attentionTitle" data-i18n="dashboard.attention_title">ReflexDesk needs attention</strong>
+                <span id="attentionText"></span>
+              </div>
+              <button id="retryEngine" class="secondary" type="button" data-i18n="dashboard.attention_retry">Retry</button>
+            </div>
+
+            <section class="settings-card" aria-labelledby="voiceSectionTitle">
+              <div class="section-title">
+                <div>
+                  <h2 id="voiceSectionTitle" data-i18n="settings.voice_title">Voice</h2>
+                  <p data-i18n="settings.voice_subtitle">How ReflexDesk listens and how it answers.</p>
                 </div>
               </div>
-            </div>
 
-            <div id="diagnosticsPreviewContainer" class="diagnostics-preview-box hidden">
-              <div class="diagnostics-preview-header">
-                <span data-i18n="advanced.diag_preview_title">Sanitized diagnostics preview</span>
-                <button id="closeDiagnosticsPreview" class="text-button" type="button" data-i18n="advanced.diag_close_btn">Close</button>
+              <div class="setting-line">
+                <div>
+                  <label for="language" data-i18n="settings.language_label">Speech language</label>
+                  <span data-i18n="settings.language_help">Used for local voice recognition.</span>
+                </div>
+                <select id="language" class="inline-control"></select>
               </div>
-              <pre id="diagnosticsPreviewText"></pre>
-            </div>
-            <div id="diagnosticsStatus" class="diagnostics-status-msg"></div>
-            <div class="advanced-actions">
-              <button id="runBenchmark" class="secondary-button" type="button" data-i18n="advanced.btn_run_benchmark">Run benchmark</button>
-              <button id="repairModel" class="secondary-button" type="button" data-i18n="advanced.btn_repair_model">Repair model</button>
-            </div>
-          </div>
-        </details>
 
-        <footer class="dashboard-footer">
-          <span data-i18n="footer.tray_hint">Closing this window keeps ReflexDesk running in the system tray.</span>
-          <button id="hideWindow" class="text-button" type="button" data-i18n="footer.hide_window">Hide window</button>
-        </footer>
+              <div class="setting-line">
+                <div>
+                  <label for="secondaryLanguage" data-i18n="settings.secondary_language_label">Second spoken language</label>
+                  <span data-i18n="settings.secondary_language_help">Optional. Enables automatic language detection for speech.</span>
+                </div>
+                <select id="secondaryLanguage" class="inline-control"></select>
+              </div>
+
+              <div class="setting-line">
+                <div>
+                  <label for="spokenFeedback" data-i18n="settings.spoken_feedback_label">Spoken replies</label>
+                  <span data-i18n="settings.spoken_feedback_help">Announce action results with an installed offline voice.</span>
+                </div>
+                <label class="switch"><input id="spokenFeedback" type="checkbox"><span></span></label>
+              </div>
+
+              <div class="setting-line">
+                <div>
+                  <label for="overlayEnabled" data-i18n="settings.overlay_label">Reflex animation</label>
+                  <span data-i18n="settings.overlay_help">Show the small voice-reactive particle indicator.</span>
+                </div>
+                <label class="switch"><input id="overlayEnabled" type="checkbox"><span></span></label>
+              </div>
+
+              <div class="setting-line">
+                <div>
+                  <strong data-i18n="settings.shortcut_label">Shortcut</strong>
+                  <span data-i18n="settings.shortcut_help">Press anywhere to start or stop listening.</span>
+                </div>
+                <kbd id="shortcutKey">Ctrl/Cmd + Shift + Space</kbd>
+              </div>
+            </section>
+
+            <section class="settings-card" aria-labelledby="applicationSectionTitle">
+              <div class="section-title">
+                <div>
+                  <h2 id="applicationSectionTitle" data-i18n="settings.application_title">Application</h2>
+                  <p data-i18n="settings.application_subtitle">Interface language, startup and window behaviour.</p>
+                </div>
+              </div>
+
+              <div class="setting-line">
+                <div>
+                  <label for="uiLocale" data-i18n="settings.ui_language_label">Interface language</label>
+                  <span data-i18n="settings.ui_language_help">Controls application text and messages.</span>
+                </div>
+                <select id="uiLocale" class="inline-control"></select>
+              </div>
+
+              <div class="setting-line">
+                <div>
+                  <label for="startAtLogin" data-i18n="settings.start_at_login_label">Start at login</label>
+                  <span data-i18n="settings.start_at_login_help">Keep ReflexDesk ready without opening a window.</span>
+                </div>
+                <label class="switch"><input id="startAtLogin" type="checkbox"><span></span></label>
+              </div>
+            </section>
+
+            <section class="settings-card" aria-labelledby="privacySectionTitle">
+              <div class="section-title">
+                <div>
+                  <h2 id="privacySectionTitle" data-i18n="privacy.title">Privacy</h2>
+                  <p data-i18n="privacy.subtitle">Local by default.</p>
+                </div>
+                <span class="local-badge" data-i18n="privacy.on_device_badge">● ON DEVICE</span>
+              </div>
+
+              <div class="setting-line">
+                <div>
+                  <label for="allowOnlineAi" data-i18n="privacy.allow_online_ai_label">Allow online AI and voice</label>
+                  <span data-i18n="privacy.allow_online_ai_help">Off keeps everything on this computer. When on, microphone audio and text may be sent to the online provider you select below and may incur charges.</span>
+                </div>
+                <label class="switch"><input id="allowOnlineAi" type="checkbox"><span></span></label>
+              </div>
+
+              <p class="setting-note" data-i18n="privacy.network_note">Local Nemotron speech stays offline and is always the default. Online audio is an opt-in you enable here.</p>
+            </section>
+
+            <section class="settings-card" id="providerCard" data-provider="openrouter" aria-labelledby="providerSectionTitle">
+              <div class="section-title">
+                <div>
+                  <h2 id="providerSectionTitle" data-i18n="provider.title">Online Provider</h2>
+                  <p data-i18n="provider.subtitle">Credentials stored securely in OS vault — never in settings or logs.</p>
+                </div>
+                <div class="section-badges">
+                  <span id="providerScopeBadge" class="local-badge" data-i18n="provider.badge_openrouter">OPENROUTER</span>
+                  <span id="providerStatusBadge" class="local-badge">Disconnected</span>
+                </div>
+              </div>
+
+              <p class="setting-note" data-i18n="provider.network_notice">Remote audio opt-in: microphone audio and reply text are uploaded to the online provider you select, and only while online AI and voice is enabled. Charges may apply.</p>
+
+              <div class="setting-line" id="providerKeyLine">
+                <div>
+                  <label for="providerApiKey" data-i18n="provider.api_key_label">OpenRouter API key</label>
+                  <span id="providerKeyHelp" data-i18n="provider.api_key_help">Stored in the OS vault. Required before online AI and voice can run.</span>
+                </div>
+                <div class="provider-key-controls">
+                  <input id="providerApiKey" type="password" class="control" placeholder="sk-or-v1-…" autocomplete="new-password" data-i18n-placeholder="provider.api_key_placeholder">
+                </div>
+              </div>
+
+              <div class="provider-actions">
+                <button id="connectProvider" class="secondary-button" type="button" data-i18n="provider.connect_button">Connect</button>
+                <button id="testProvider" class="text-button" type="button" disabled data-i18n="provider.test_button">Test</button>
+                <button id="disconnectProvider" class="danger-ghost" type="button" disabled data-i18n="provider.disconnect_button">Disconnect</button>
+              </div>
+              <p id="providerStatusMessage" class="provider-status-msg"></p>
+
+              <div class="setting-line">
+                <div>
+                  <label for="sttProvider" data-i18n="provider.stt_engine_label">Speech engine</label>
+                  <span data-i18n="provider.stt_engine_help">Nemotron and Moonshine run offline on this computer. OpenRouter sends microphone audio to the network.</span>
+                </div>
+                <select id="sttProvider" class="inline-control">
+                  <option value="nemotron" data-i18n="advanced.provider_nemotron">NVIDIA Nemotron 3.5</option>
+                  <option value="moonshine" data-i18n="advanced.provider_moonshine">Moonshine fallback</option>
+                  <option value="openrouter" data-i18n="provider.engine_openrouter">OpenRouter (online)</option>
+                  <option value="manual" data-i18n="advanced.provider_manual">Manual test mode</option>
+                </select>
+              </div>
+
+              <div class="setting-line">
+                <div>
+                  <label for="openRouterSttModel" data-i18n="provider.openrouter_stt_model_label">OpenRouter transcription model</label>
+                  <span data-i18n="provider.openrouter_stt_model_help">Used only when OpenRouter is the speech engine.</span>
+                </div>
+                <input id="openRouterSttModel" type="text" class="control" placeholder="openai/whisper-large-v3" data-i18n-placeholder="provider.openrouter_stt_model_placeholder">
+              </div>
+
+              <div class="setting-line">
+                <div>
+                  <label for="ttsProvider" data-i18n="provider.tts_engine_label">Spoken replies engine</label>
+                  <span data-i18n="provider.tts_engine_help">Offline voices stay on this computer. OpenRouter synthesizes replies in the cloud.</span>
+                </div>
+                <select id="ttsProvider" class="inline-control">
+                  <option value="local" data-i18n="provider.tts_local">Offline system voice</option>
+                  <option value="openrouter" data-i18n="provider.tts_openrouter">OpenRouter (online)</option>
+                </select>
+              </div>
+
+              <div class="setting-line">
+                <div>
+                  <label for="openRouterTtsModel" data-i18n="provider.openrouter_tts_model_label">OpenRouter speech model</label>
+                  <span data-i18n="provider.openrouter_tts_model_help">Used only when OpenRouter reads the replies.</span>
+                </div>
+                <input id="openRouterTtsModel" type="text" class="control" placeholder="x-ai/grok-voice-tts-1.0" data-i18n-placeholder="provider.openrouter_tts_model_placeholder">
+              </div>
+
+              <div class="setting-line">
+                <div>
+                  <label for="openRouterTtsVoice" data-i18n="provider.openrouter_tts_voice_label">OpenRouter voice</label>
+                  <span data-i18n="provider.openrouter_tts_voice_help">Voice name supported by the selected model.</span>
+                </div>
+                <input id="openRouterTtsVoice" type="text" class="control" placeholder="eve" data-i18n-placeholder="provider.openrouter_tts_voice_placeholder">
+              </div>
+
+              <p class="setting-note" data-i18n="provider.billing_notice">Online voice is billed by the provider on your own account and may incur charges. The API key is stored in the OS vault and is never shown again.</p>
+              <p class="setting-note" data-i18n="provider.requires_online">Online audio stays disabled until “Allow online AI and voice” is turned on above.</p>
+            </section>
+
+            <details class="advanced-card" aria-labelledby="agentsSummaryTitle">
+              <summary>
+                <span id="agentsSummaryTitle" data-i18n="agents.summary_title">AI agents &amp; automations</span>
+                <small data-i18n="agents.summary_subtitle">External harnesses and recorded skills.</small>
+              </summary>
+              <div class="accordion-body">
+                <section class="accordion-section" aria-labelledby="agentsSectionTitle">
+                  <div class="section-title">
+                    <div>
+                      <h2 id="agentsSectionTitle" data-i18n="agents.title">AI agents</h2>
+                      <p data-i18n="agents.subtitle">ReflexDesk can hand larger jobs to tools already installed.</p>
+                    </div>
+                    <button id="refreshHarnesses" class="text-button" type="button" data-i18n="agents.refresh">Refresh</button>
+                  </div>
+                  <div id="harnessList" class="agent-grid"><span class="muted">Checking…</span></div>
+                </section>
+
+                <section class="accordion-section" id="skillsCard" aria-labelledby="skillsSectionTitle">
+                  <div class="section-title">
+                    <div>
+                      <h2 id="skillsSectionTitle" data-i18n="skills.title">Skills &amp; Automations</h2>
+                      <p data-i18n="skills.subtitle">Deterministic multi-step workflows without unrestricted machine access.</p>
+                    </div>
+                    <div class="skills-card-actions">
+                      <button id="refreshSkills" class="text-button" type="button" data-i18n="skills.refresh">Refresh</button>
+                      <button id="toggleSkillRecording" class="secondary-button compact-btn" type="button" data-i18n="skills.record_start">Record</button>
+                    </div>
+                  </div>
+                  <div id="skillRecordingNotice" class="hidden provider-status-msg" data-i18n="skills.recording_active"></div>
+                  <div id="skillsList" class="agent-grid"><span class="muted" data-i18n="skills.empty">Loading skills…</span></div>
+                </section>
+              </div>
+            </details>
+
+            <details class="advanced-card" aria-labelledby="advancedSummaryTitle">
+              <summary>
+                <span id="advancedSummaryTitle" data-i18n="advanced.title">Advanced</span>
+                <small data-i18n="advanced.subtitle">Models, endpoints and diagnostics</small>
+              </summary>
+              <div class="advanced-content">
+                <div class="advanced-grid">
+                  <label><span data-i18n="advanced.laya_endpoint">Laya endpoint</span>
+                    <input id="layaEndpoint" type="text" class="control">
+                  </label>
+
+                  <label><span data-i18n="advanced.planner_endpoint">Planner endpoint</span>
+                    <input id="plannerEndpoint" type="text" class="control">
+                  </label>
+
+                  <label><span data-i18n="advanced.planner_model">Planner model</span>
+                    <input id="plannerModel" type="text" class="control">
+                  </label>
+                </div>
+
+                <div class="diagnostics">
+                  <div><span data-i18n="advanced.diag_system">System</span><b id="systemInfo">Loading…</b></div>
+                  <div><span data-i18n="advanced.diag_benchmark">Speech benchmark</span><b id="benchmarkInfo">Not measured</b></div>
+                  <div><span data-i18n="advanced.diag_engine">Engine</span><b id="engineInfo">Checking…</b></div>
+                  <div><span data-i18n="advanced.diag_model_backend">Model backend</span><b id="modelBackendInfo">Nemotron 3.5 Q4_K (local GGUF)</b></div>
+                  <div><span data-i18n="advanced.diag_model_cache">Model cache</span><b id="modelCacheInfo">Calculating…</b></div>
+                  <div>
+                    <span data-i18n="advanced.diag_bundle">Diagnostics bundle</span>
+                    <div class="diagnostics-btn-group">
+                      <button id="previewDiagnostics" class="secondary-button compact-btn" type="button" data-i18n="advanced.diag_preview_btn">Preview</button>
+                      <button id="exportDiagnostics" class="secondary-button compact-btn" type="button" data-i18n="advanced.diag_export_btn">Export</button>
+                    </div>
+                  </div>
+                </div>
+
+                <div id="diagnosticsPreviewContainer" class="diagnostics-preview-box hidden">
+                  <div class="diagnostics-preview-header">
+                    <span data-i18n="advanced.diag_preview_title">Sanitized diagnostics preview</span>
+                    <button id="closeDiagnosticsPreview" class="text-button" type="button" data-i18n="advanced.diag_close_btn">Close</button>
+                  </div>
+                  <pre id="diagnosticsPreviewText"></pre>
+                </div>
+                <div id="diagnosticsStatus" class="diagnostics-status-msg"></div>
+                <div class="advanced-actions">
+                  <button id="runBenchmark" class="secondary-button" type="button" data-i18n="advanced.btn_run_benchmark">Run benchmark</button>
+                  <button id="repairModel" class="secondary-button" type="button" data-i18n="advanced.btn_repair_model">Repair model</button>
+                </div>
+              </div>
+            </details>
+
+            <footer class="dashboard-footer">
+              <span data-i18n="footer.tray_hint">Closing this window keeps ReflexDesk running in the system tray.</span>
+              <button id="hideWindow" class="text-button" type="button" data-i18n="footer.hide_window">Hide window</button>
+            </footer>
+          </div>
+        </div>
       </section>
     </main>
   </body>

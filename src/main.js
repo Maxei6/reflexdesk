@@ -53,6 +53,23 @@ function fillLanguages(select) {
     })
     .join("");
 }
+function fillSecondaryLanguages(select) {
+  select.innerHTML = '<option value="none">' + t("settings.secondary_language_none") + "</option>"
+    + LANGUAGES.filter(function (entry) { return entry[0] !== "auto"; })
+      .map(function (entry) {
+        return '<option value="' + entry[0] + '">' + entry[1] + "</option>";
+      }).join("");
+}
+
+function updateSecondaryChoice(primary, secondary) {
+  const enabled = primary.value !== "auto";
+  secondary.disabled = !enabled;
+  secondary.querySelectorAll("option").forEach(function (option) {
+    option.disabled = option.value !== "none" && option.value === primary.value;
+  });
+  if (!enabled || secondary.value === primary.value) secondary.value = "none";
+}
+
 
 function fillUiLocales(select) {
   if (!select) return;
@@ -68,6 +85,8 @@ fillUiLocales($("uiLocale"));
 
 fillLanguages($("setupLanguage"));
 fillLanguages($("language"));
+fillSecondaryLanguages($("setupSecondaryLanguage"));
+fillSecondaryLanguages($("secondaryLanguage"));
 
 function guessedLanguage() {
   const code = String(navigator.language || "en").toLowerCase().split("-")[0];
@@ -79,7 +98,9 @@ function syncLocalVoiceSettings() {
   const previous = JSON.parse(localStorage.getItem(LOCAL_KEY) || "{}");
   const next = Object.assign({}, previous, {
     sttProvider: settings.stt_provider,
+    ttsProvider: settings.tts_provider,
     language: settings.language,
+    secondaryLanguage: settings.secondary_language || "none",
     uiLocale: settings.ui_locale || "system",
     overlayEnabled: settings.overlay_enabled,
     plannerMode: settings.allow_online_ai ? "hybrid" : "local",
@@ -87,10 +108,10 @@ function syncLocalVoiceSettings() {
     plannerEndpoint: settings.planner_endpoint,
     plannerModel: settings.planner_model,
   });
+  localStorage.setItem(LOCAL_KEY, JSON.stringify(next));
 }
 
 async function persistSettings() {
-  syncLocalVoiceSettings();
   settings = await invoke("save_app_settings", { settings: settings });
   syncLocalVoiceSettings();
   renderSettings();
@@ -101,10 +122,17 @@ function renderSettings() {
   if (!settings) return;
   if ($("uiLocale")) $("uiLocale").value = settings.ui_locale || "system";
   $("language").value = settings.language;
+  $("secondaryLanguage").value = settings.secondary_language || "none";
+  updateSecondaryChoice($("language"), $("secondaryLanguage"));
+  $("spokenFeedback").checked = Boolean(settings.spoken_feedback);
   $("startAtLogin").checked = Boolean(settings.start_at_login);
   $("overlayEnabled").checked = Boolean(settings.overlay_enabled);
   $("allowOnlineAi").checked = Boolean(settings.allow_online_ai);
   $("sttProvider").value = settings.stt_provider;
+  if ($("ttsProvider")) $("ttsProvider").value = settings.tts_provider || "local";
+  if ($("openRouterSttModel")) $("openRouterSttModel").value = settings.openrouter_stt_model || "";
+  if ($("openRouterTtsModel")) $("openRouterTtsModel").value = settings.openrouter_tts_model || "";
+  if ($("openRouterTtsVoice")) $("openRouterTtsVoice").value = settings.openrouter_tts_voice || "";
   $("layaEndpoint").value = settings.laya_endpoint;
   $("plannerEndpoint").value = settings.planner_endpoint;
   $("plannerModel").value = settings.planner_model;
@@ -119,14 +147,49 @@ function renderSettings() {
   renderProviderStatus();
 }
 
+// The provider card holds one credential: the OpenRouter API key. Its scope
+// badge only reports whether cloud speech is currently armed, so a stored key
+// can never be misread as belonging to another provider or endpoint.
+function providerScope() {
+  if (!settings) return "local";
+  const remoteSelected =
+    settings.stt_provider === "openrouter" || settings.tts_provider === "openrouter";
+  const keyConnected = Boolean(
+    settings.openrouter_secret_ref && settings.openrouter_secret_ref.id,
+  );
+  return remoteSelected || keyConnected ? "openrouter" : "local";
+}
+
+const PROVIDER_TARGET = "openrouter";
+
+function providerSecretRef() {
+  return settings ? settings.openrouter_secret_ref : null;
+}
+
 function renderProviderStatus() {
-  const hasSecret = Boolean(settings && settings.planner_secret_ref && settings.planner_secret_ref.id);
+  if (!settings) return;
+
+  const scope = providerScope();
+  const card = $("providerCard");
+  if (card) card.dataset.provider = PROVIDER_TARGET;
+
+  const scopeBadge = $("providerScopeBadge");
+  if (scopeBadge) {
+    // Keep the data-i18n key in sync so a later translateDom() renders the same
+    // scope instead of overwriting it with the markup's default.
+    const key = "provider.badge_" + scope;
+    scopeBadge.dataset.i18n = key;
+    scopeBadge.textContent = t(key, { default: scope.toUpperCase() });
+  }
+
   const badge = $("providerStatusBadge");
+  if (!badge) return;
+
   const testBtn = $("testProvider");
   const disconnectBtn = $("disconnectProvider");
   const msg = $("providerStatusMessage");
-
-  if (!badge) return;
+  const secretRef = providerSecretRef();
+  const hasSecret = Boolean(secretRef && secretRef.id);
 
   if (hasSecret) {
     badge.textContent = t("provider.status_connected");
@@ -136,7 +199,7 @@ function renderProviderStatus() {
     if (testBtn) testBtn.disabled = false;
     if (disconnectBtn) disconnectBtn.disabled = false;
     if (msg && !msg.textContent) {
-      msg.textContent = t("provider.connected_id", { id: settings.planner_secret_ref.id });
+      msg.textContent = t("provider.connected_id", { id: secretRef.id });
       msg.className = "provider-status-msg";
     }
   } else {
@@ -147,9 +210,22 @@ function renderProviderStatus() {
     if (testBtn) testBtn.disabled = true;
     if (disconnectBtn) disconnectBtn.disabled = true;
     if (msg) {
-      msg.textContent = "";
+      msg.textContent = scope === "openrouter"
+        ? t("provider.remote_speech_requires_key", {
+            default: "Connect an OpenRouter API key to use cloud speech.",
+          })
+        : "";
       msg.className = "provider-status-msg";
     }
+  }
+
+  // Opt-in reminder wins over the generic state: OpenRouter is never used while
+  // online AI is off, so that is the actionable message.
+  if (scope === "openrouter" && !settings.allow_online_ai && msg) {
+    msg.textContent = t("provider.requires_online", {
+      default: "Turn on 'Allow online AI and voice' to use OpenRouter.",
+    });
+    msg.className = "provider-status-msg error";
   }
 }
 
@@ -269,6 +345,8 @@ function showOnboarding() {
 
   const initial = settings.language === "auto" ? guessedLanguage() : settings.language;
   $("setupLanguage").value = initial;
+  $("setupSecondaryLanguage").value = settings.secondary_language || "none";
+  updateSecondaryChoice($("setupLanguage"), $("setupSecondaryLanguage"));
   $("setupAutostart").checked = Boolean(settings.start_at_login);
   setupOrb.setState("ready");
   translateDom();
@@ -277,6 +355,8 @@ function showOnboarding() {
 function showDashboard() {
   $("onboarding").classList.add("hidden");
   $("dashboard").classList.remove("hidden");
+  const pane = document.querySelector(".workspace-pane");
+  if (pane) pane.scrollTop = 0;
   renderSettings();
   renderRuntime(runtime);
   refreshHarnesses();
@@ -321,6 +401,7 @@ async function prepareSetup() {
     await requestMicrophonePermission();
 
     settings.language = $("setupLanguage").value;
+    settings.secondary_language = $("setupSecondaryLanguage").value;
     settings.start_at_login = $("setupAutostart").checked;
     settings.stt_provider = "nemotron";
     await persistSettings();
@@ -404,13 +485,23 @@ async function saveDashboardSettings() {
     if (settings.ui_locale !== prevLocale) {
       setLocale(settings.ui_locale);
       translateDom();
+      document.querySelectorAll("#setupSecondaryLanguage option[value='none'], #secondaryLanguage option[value='none']").forEach(function (option) {
+        option.textContent = t("settings.secondary_language_none");
+      });
     }
   }
   settings.language = $("language").value;
+  updateSecondaryChoice($("language"), $("secondaryLanguage"));
+  settings.secondary_language = $("secondaryLanguage").value;
+  settings.spoken_feedback = $("spokenFeedback").checked;
   settings.start_at_login = $("startAtLogin").checked;
   settings.overlay_enabled = $("overlayEnabled").checked;
   settings.allow_online_ai = $("allowOnlineAi").checked;
   settings.stt_provider = $("sttProvider").value;
+  if ($("ttsProvider")) settings.tts_provider = $("ttsProvider").value;
+  if ($("openRouterSttModel")) settings.openrouter_stt_model = $("openRouterSttModel").value.trim();
+  if ($("openRouterTtsModel")) settings.openrouter_tts_model = $("openRouterTtsModel").value.trim();
+  if ($("openRouterTtsVoice")) settings.openrouter_tts_voice = $("openRouterTtsVoice").value.trim();
   settings.laya_endpoint = $("layaEndpoint").value.trim();
   settings.planner_endpoint = $("plannerEndpoint").value.trim();
   settings.planner_model = $("plannerModel").value.trim() || "auto";
@@ -566,11 +657,15 @@ async function refreshDiagnostics() {
       profile.os + " · " + profile.arch + " · " + profile.logical_cpus
       + " threads · " + profile.acceleration_hint;
 
-    $("engineInfo").textContent = speech.ready
-      ? t("advanced.diag_engine_ready")
-      : speech.running
-        ? t("advanced.diag_engine_starting")
-        : t("advanced.diag_engine_stopped");
+    $("engineInfo").textContent = speech.active_backend === "openrouter"
+      ? (speech.ready
+          ? "OpenRouter · " + speech.model
+          : t("advanced.diag_engine_stopped"))
+      : speech.ready
+        ? t("advanced.diag_engine_ready")
+        : speech.running
+          ? t("advanced.diag_engine_starting")
+          : t("advanced.diag_engine_stopped");
 
     if ($("modelCacheInfo")) {
       const mb = (cacheBytes / (1024 * 1024)).toFixed(1);
@@ -578,10 +673,14 @@ async function refreshDiagnostics() {
     }
 
 
-    if ($("modelBackendInfo") && modelStatus) {
-      $("modelBackendInfo").textContent = modelStatus.verified
-        ? "Nemotron 3.5 Q4_K (Verified Active)"
-        : "Nemotron 3.5 (" + modelStatus.state + ")";
+    if ($("modelBackendInfo")) {
+      if (speech.active_backend === "openrouter") {
+        $("modelBackendInfo").textContent = speech.model;
+      } else if (modelStatus) {
+        $("modelBackendInfo").textContent = modelStatus.verified
+          ? "Nemotron 3.5 Q4_K (Verified Active)"
+          : "Nemotron 3.5 (" + modelStatus.state + ")";
+      }
     }
     if ($("benchmarkInfo")) {
       if (benchmarkReport && benchmarkReport.selected_candidate_id) {
@@ -603,6 +702,10 @@ const TOOL_RISK_MAP = {
   "browser.open": "sensitive",
   "browser.search": "safe",
   "harness.start": "external_commit",
+};
+const TOOL_CAPABILITY_MAP = {
+  "app.open": "desktop.launch",
+  "browser.search": "browser.open",
 };
 
 function newSessionId() {
@@ -791,6 +894,114 @@ async function requestActionWithConfirmation(envelope, rawText) {
   return res;
 }
 
+let activeSpeechAudio = null;
+let activeSpeechUrl = null;
+
+function stopRemoteSpeech() {
+  if (activeSpeechAudio) {
+    try { activeSpeechAudio.pause(); } catch {}
+    activeSpeechAudio = null;
+  }
+  if (activeSpeechUrl) {
+    try { URL.revokeObjectURL(activeSpeechUrl); } catch {}
+    activeSpeechUrl = null;
+  }
+}
+
+function base64ToBytes(encoded) {
+  const binary = atob(String(encoded || ""));
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+// Never let ReflexDesk transcribe its own reply.
+async function pauseListeningForSpeech() {
+  if (!runtime || !runtime.listening) return true;
+  try {
+    renderRuntime(await invoke("set_listening", { active: false }));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function speakRemote(text) {
+  if (!(await pauseListeningForSpeech())) return;
+
+  try {
+    const speech = await invoke("tts_speak", { text });
+    const blob = new Blob([base64ToBytes(speech.audio_base64)], {
+      type: speech.content_type || "audio/mpeg",
+    });
+    stopRemoteSpeech();
+    activeSpeechUrl = URL.createObjectURL(blob);
+    activeSpeechAudio = new Audio(activeSpeechUrl);
+    activeSpeechAudio.addEventListener("ended", stopRemoteSpeech);
+    await activeSpeechAudio.play();
+  } catch (error) {
+    stopRemoteSpeech();
+    const message = String(error).slice(0, 150);
+    $("attentionBanner").classList.remove("hidden");
+    $("attentionText").textContent = t("tts.playback_failed", {
+      error: message,
+      default: "Spoken reply failed: " + message,
+    });
+  }
+}
+
+async function speakActionResult(result) {
+  if (!settings?.spoken_feedback || !["success", "deny", "denied", "error"].includes(result.status)) return;
+
+  const phrase = result.status === "success"
+    ? t("settings.spoken_feedback_done")
+    : t("settings.spoken_feedback_denied");
+
+  if (settings.tts_provider === "openrouter") {
+    await speakRemote(phrase);
+    return;
+  }
+
+  const synth = window.speechSynthesis;
+  if (!synth || !window.SpeechSynthesisUtterance) return;
+
+  let voices = synth.getVoices();
+  if (!voices.length) {
+    voices = await new Promise(function (resolve) {
+      const timer = setTimeout(function () {
+        synth.removeEventListener("voiceschanged", ready);
+        resolve(synth.getVoices());
+      }, 1000);
+      function ready() {
+        clearTimeout(timer);
+        synth.removeEventListener("voiceschanged", ready);
+        resolve(synth.getVoices());
+      }
+      synth.addEventListener("voiceschanged", ready);
+    });
+  }
+  // Never use a provider-backed browser voice in offline mode.
+  const localVoices = voices.filter(function (voice) { return voice.localService === true; });
+  if (!localVoices.length) {
+    $("attentionBanner").classList.remove("hidden");
+    $("attentionText").textContent = t("settings.spoken_feedback_unavailable");
+    return;
+  }
+
+  if (!(await pauseListeningForSpeech())) return;
+
+  const locale = getLocale();
+  const preferred = locale === "system" ? settings.language : locale;
+  const voice = localVoices.find(function (v) { return v.lang.toLowerCase().startsWith(preferred + "-"); })
+    || localVoices.find(function (v) { return v.lang.toLowerCase().startsWith("en-"); })
+    || localVoices[0];
+  const utterance = new SpeechSynthesisUtterance(phrase);
+  utterance.voice = voice;
+  utterance.lang = voice.lang;
+  synth.cancel();
+  synth.speak(utterance);
+}
+
 function handleActionResult(result) {
   if (!result) return;
   if (result.status === "deny" || result.status === "denied") {
@@ -810,6 +1021,7 @@ function handleActionResult(result) {
     $("attentionBanner").classList.add("hidden");
     dashboardOrb.setState("idle");
   }
+  void speakActionResult(result);
 }
 
 async function dispatchText(text) {
@@ -898,6 +1110,9 @@ async function bootstrap() {
   runtime = await invoke("get_runtime_status");
   setLocale(settings.ui_locale || "system");
   translateDom();
+  document.querySelectorAll("#setupSecondaryLanguage option[value='none'], #secondaryLanguage option[value='none']").forEach(function (option) {
+    option.textContent = t("settings.secondary_language_none");
+  });
   syncLocalVoiceSettings();
 
   if (settings.setup_complete) {
@@ -923,17 +1138,29 @@ $("hideWindow").addEventListener("click", function () {
 
 for (const id of [
   "uiLocale",
+  "secondaryLanguage",
+  "spokenFeedback",
   "language",
   "startAtLogin",
   "overlayEnabled",
   "allowOnlineAi",
   "sttProvider",
+  "ttsProvider",
+  "openRouterSttModel",
+  "openRouterTtsModel",
+  "openRouterTtsVoice",
   "layaEndpoint",
   "plannerEndpoint",
   "plannerModel",
 ]) {
   if ($(id)) $(id).addEventListener("change", saveDashboardSettings);
 }
+$("setupLanguage").addEventListener("change", function () {
+  updateSecondaryChoice($("setupLanguage"), $("setupSecondaryLanguage"));
+});
+$("language").addEventListener("change", function () {
+  updateSecondaryChoice($("language"), $("secondaryLanguage"));
+});
 
 
 
@@ -1078,6 +1305,7 @@ if ($("connectProvider")) {
     const keyInput = $("providerApiKey");
     const key = keyInput ? keyInput.value.trim() : "";
     const msg = $("providerStatusMessage");
+    const provider = PROVIDER_TARGET;
     if (!key) {
       if (msg) {
         msg.textContent = t("provider.enter_key_prompt");
@@ -1088,23 +1316,24 @@ if ($("connectProvider")) {
 
     try {
       $("connectProvider").disabled = true;
-      $("connectProvider").textContent = "Connecting…";
+      $("connectProvider").textContent = t("provider.connecting_button");
       const status = await invoke("connect_provider", {
-        provider: "planner",
+        provider: provider,
         apiKey: key,
       });
 
       // Immediately zeroize / clear DOM input
-      keyInput.value = "";
+      if (keyInput) keyInput.value = "";
 
       settings = await invoke("get_app_settings");
+      if (msg) msg.textContent = "";
       renderSettings();
 
       if (msg) {
         msg.textContent = status.message || t("provider.connected_success");
-        msg.className = status.last_status === "auth-invalid"
-          ? "provider-status-msg error"
-          : "provider-status-msg success";
+        msg.className = status.last_status === "connected"
+          ? "provider-status-msg success"
+          : "provider-status-msg error";
       }
     } catch (err) {
       if (msg) {
@@ -1112,8 +1341,11 @@ if ($("connectProvider")) {
         msg.className = "provider-status-msg error";
       }
     } finally {
-      $("connectProvider").disabled = false;
-      $("connectProvider").textContent = "Connect";
+      const button = $("connectProvider");
+      if (button) {
+        button.disabled = false;
+        button.textContent = t("provider.connect_button");
+      }
     }
   });
 }
@@ -1123,13 +1355,13 @@ if ($("testProvider")) {
     const msg = $("providerStatusMessage");
     try {
       $("testProvider").disabled = true;
-      $("testProvider").textContent = "Testing…";
-      const status = await invoke("test_provider", { provider: "planner" });
+      $("testProvider").textContent = t("provider.testing_button");
+      const status = await invoke("test_provider", { provider: PROVIDER_TARGET });
       if (msg) {
         msg.textContent = status.message || t("provider.connected_success");
-        msg.className = status.last_status === "auth-invalid"
-          ? "provider-status-msg error"
-          : "provider-status-msg success";
+        msg.className = status.last_status === "connected"
+          ? "provider-status-msg success"
+          : "provider-status-msg error";
       }
       if (status.last_status === "auth-invalid") {
         $("attentionBanner").classList.remove("hidden");
@@ -1141,8 +1373,11 @@ if ($("testProvider")) {
         msg.className = "provider-status-msg error";
       }
     } finally {
-      $("testProvider").disabled = false;
-      $("testProvider").textContent = "Test";
+      const button = $("testProvider");
+      if (button) {
+        button.disabled = false;
+        button.textContent = t("provider.test_button");
+      }
     }
   });
 }
@@ -1152,8 +1387,9 @@ if ($("disconnectProvider")) {
     const msg = $("providerStatusMessage");
     try {
       $("disconnectProvider").disabled = true;
-      await invoke("disconnect_provider", { provider: "planner" });
+      await invoke("disconnect_provider", { provider: PROVIDER_TARGET });
       settings = await invoke("get_app_settings");
+      if (msg) msg.textContent = "";
       renderSettings();
       if (msg) {
         msg.textContent = t("provider.disconnected_success");
@@ -1165,7 +1401,8 @@ if ($("disconnectProvider")) {
         msg.className = "provider-status-msg error";
       }
     } finally {
-      $("disconnectProvider").disabled = false;
+      const button = $("disconnectProvider");
+      if (button) button.disabled = false;
     }
   });
 }

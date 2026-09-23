@@ -93,6 +93,33 @@ impl std::fmt::Debug for SecretBytes {
     }
 }
 
+/// Builds a bearer `Authorization` header from a stored credential.
+///
+/// Credentials are user-supplied, so they are validated as single-line ASCII
+/// before reaching `HeaderValue`. This keeps request builders on the
+/// non-panicking path (a credential containing CR/LF must fail closed, not
+/// abort the process) and blocks header injection.
+pub fn bearer_header(api_key: &SecretBytes) -> Result<reqwest::header::HeaderValue, String> {
+    let raw = api_key
+        .expose_str()
+        .map_err(|_| "credential-invalid: stored key is not valid UTF-8".to_string())?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err("credential-invalid: stored key is empty".into());
+    }
+    if !trimmed.chars().all(|c| c.is_ascii_graphic()) {
+        return Err(
+            "credential-invalid: stored key contains characters that are invalid in an HTTP credential"
+                .into(),
+        );
+    }
+
+    let mut value = Zeroizing::new(String::from("Bearer "));
+    value.push_str(trimmed);
+    reqwest::header::HeaderValue::from_str(&value)
+        .map_err(|_| "credential-invalid: stored key is not a valid HTTP credential".to_string())
+}
+
 impl std::fmt::Display for SecretBytes {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "[REDACTED_SECRET]")
@@ -575,7 +602,11 @@ pub fn scrub_harness_env(
 // ---------------------------------------------------------------------------
 
 /// Tests a provider endpoint with an API key, mapping 401/403 to sanitized `auth-invalid`.
+///
+/// `provider` is only used for the returned status label; the endpoint is the
+/// caller's fixed, policy-checked probe URL.
 pub fn test_provider_connection(
+    provider: &str,
     endpoint: &str,
     api_key: &SecretBytes,
     persisted_allow_online: bool,
@@ -584,12 +615,14 @@ pub fn test_provider_connection(
 
     if let Err(e) = check_endpoint_allowed(endpoint, persisted_allow_online) {
         return ProviderConnectionStatus {
-            provider: "planner".into(),
+            provider: provider.to_string(),
             connected: false,
             secret_id: None,
             updated_at_ts: Some(now_ts()),
-            last_status: "auth-invalid".into(),
-            message: format!("Policy check failed: {e}"),
+            last_status: "unreachable".into(),
+            message: format!(
+                "Online AI is disabled in settings, so the credential was not sent anywhere ({e})."
+            ),
         };
     }
 
@@ -606,7 +639,7 @@ pub fn test_provider_connection(
         Ok(c) => c,
         Err(e) => {
             return ProviderConnectionStatus {
-                provider: "planner".into(),
+                provider: provider.to_string(),
                 connected: false,
                 secret_id: None,
                 updated_at_ts: Some(now_ts()),
@@ -619,25 +652,29 @@ pub fn test_provider_connection(
         }
     };
 
-    let key_str = match api_key.expose_str() {
-        Ok(s) => s,
-        Err(_) => {
+    let header = match bearer_header(api_key) {
+        Ok(header) => header,
+        Err(e) => {
             return ProviderConnectionStatus {
-                provider: "planner".into(),
+                provider: provider.to_string(),
                 connected: false,
                 secret_id: None,
                 updated_at_ts: Some(now_ts()),
                 last_status: "auth-invalid".into(),
-                message: "Stored key contains invalid UTF-8 encoding".into(),
+                message: format!("Stored credential was not sent: {e}"),
             };
         }
     };
 
-    let resp = match client.get(&models_url).bearer_auth(key_str).send() {
+    let resp = match client
+        .get(&models_url)
+        .header(reqwest::header::AUTHORIZATION, header)
+        .send()
+    {
         Ok(r) => r,
         Err(e) => {
             return ProviderConnectionStatus {
-                provider: "planner".into(),
+                provider: provider.to_string(),
                 connected: false,
                 secret_id: None,
                 updated_at_ts: Some(now_ts()),
@@ -651,33 +688,27 @@ pub fn test_provider_connection(
     };
 
     let status = resp.status();
-    if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
-        ProviderConnectionStatus {
-            provider: "planner".into(),
-            connected: true,
-            secret_id: None,
-            updated_at_ts: Some(now_ts()),
-            last_status: "auth-invalid".into(),
-            message: "Authentication failed: invalid or expired provider API key. Please rotate credentials.".into(),
-        }
+    let (last_status, message) = if status == reqwest::StatusCode::UNAUTHORIZED
+        || status == reqwest::StatusCode::FORBIDDEN
+    {
+        (
+            "auth-invalid",
+            "Authentication failed: invalid or expired provider API key. Please rotate credentials."
+                .to_string(),
+        )
     } else if status.is_success() {
-        ProviderConnectionStatus {
-            provider: "planner".into(),
-            connected: true,
-            secret_id: None,
-            updated_at_ts: Some(now_ts()),
-            last_status: "connected".into(),
-            message: "Provider connection verified successfully.".into(),
-        }
+        ("connected", "Provider connection verified successfully.".to_string())
     } else {
-        ProviderConnectionStatus {
-            provider: "planner".into(),
-            connected: true,
-            secret_id: None,
-            updated_at_ts: Some(now_ts()),
-            last_status: "unreachable".into(),
-            message: format!("Provider endpoint returned HTTP {status}"),
-        }
+        ("unreachable", format!("Provider endpoint returned HTTP {status}"))
+    };
+
+    ProviderConnectionStatus {
+        provider: provider.to_string(),
+        connected: last_status == "connected",
+        secret_id: None,
+        updated_at_ts: Some(now_ts()),
+        last_status: last_status.to_string(),
+        message,
     }
 }
 

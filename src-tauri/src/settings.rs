@@ -2,7 +2,13 @@ use serde::{Deserialize, Serialize};
 use std::{fs, path::PathBuf, sync::Mutex};
 use tauri::{AppHandle, Manager};
 
-pub const SETTINGS_SCHEMA_VERSION: u32 = 2;
+pub const SETTINGS_SCHEMA_VERSION: u32 = 4;
+
+/// Selectable speech-to-text engines. `openrouter` is the only remote engine.
+pub const STT_PROVIDERS: &[&str] = &["nemotron", "moonshine", "openrouter", "manual"];
+
+/// Selectable text-to-speech engines. `local` is the offline OS voice path.
+pub const TTS_PROVIDERS: &[&str] = &["local", "openrouter"];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -10,14 +16,21 @@ pub struct AppSettings {
     pub schema_version: u32,
     pub setup_complete: bool,
     pub language: String,
+    pub secondary_language: String,
     pub ui_locale: String,
     pub shortcut: String,
     pub start_at_login: bool,
     pub overlay_enabled: bool,
     pub sounds_enabled: bool,
+    pub spoken_feedback: bool,
     pub allow_online_ai: bool,
     pub voice_benchmark_ms: Option<u64>,
     pub stt_provider: String,
+    pub tts_provider: String,
+    pub openrouter_stt_model: String,
+    pub openrouter_tts_model: String,
+    pub openrouter_tts_voice: String,
+    pub openrouter_secret_ref: Option<crate::secrets::SecretRef>,
     pub laya_endpoint: String,
     pub planner_endpoint: String,
     pub planner_model: String,
@@ -30,14 +43,21 @@ impl Default for AppSettings {
             schema_version: SETTINGS_SCHEMA_VERSION,
             setup_complete: false,
             language: "auto".into(),
+            secondary_language: "none".into(),
             shortcut: "CommandOrControl+Shift+Space".into(),
             ui_locale: "system".into(),
             start_at_login: true,
             overlay_enabled: true,
             sounds_enabled: false,
+            spoken_feedback: false,
             allow_online_ai: false,
             voice_benchmark_ms: None,
             stt_provider: "nemotron".into(),
+            tts_provider: "local".into(),
+            openrouter_stt_model: crate::openrouter::DEFAULT_STT_MODEL.into(),
+            openrouter_tts_model: crate::openrouter::DEFAULT_TTS_MODEL.into(),
+            openrouter_tts_voice: crate::openrouter::DEFAULT_TTS_VOICE.into(),
+            openrouter_secret_ref: None,
             laya_endpoint: "http://127.0.0.1:8787".into(),
             planner_endpoint: "http://127.0.0.1:11434/v1/chat/completions".into(),
             planner_model: "auto".into(),
@@ -59,6 +79,43 @@ impl SettingsState {
     pub fn replace(&self, settings: AppSettings) -> Result<(), String> {
         *self.0.lock().map_err(|_| "settings lock poisoned")? = settings;
         Ok(())
+    }
+}
+
+impl AppSettings {
+    /// True when the selected speech-to-text engine is OpenRouter's cloud API.
+    pub fn stt_uses_openrouter(&self) -> bool {
+        self.stt_provider == "openrouter"
+    }
+
+    /// True when the selected text-to-speech engine is OpenRouter's cloud API.
+    pub fn tts_uses_openrouter(&self) -> bool {
+        self.tts_provider == "openrouter"
+    }
+
+    /// Coerces stored values into the supported allowlists.
+    ///
+    /// Provider strings come from the renderer, so they are normalized rather
+    /// than trusted: an unknown engine falls back to the offline default and
+    /// can never silently address a remote endpoint. Model/voice identifiers
+    /// are validated before they reach a URL or a request body.
+    pub fn normalize(&mut self) {
+        if !STT_PROVIDERS.contains(&self.stt_provider.as_str()) {
+            self.stt_provider = "nemotron".into();
+        }
+        if !TTS_PROVIDERS.contains(&self.tts_provider.as_str()) {
+            self.tts_provider = "local".into();
+        }
+
+        self.openrouter_stt_model =
+            crate::openrouter::validate_model_id(&self.openrouter_stt_model)
+                .unwrap_or_else(|_| crate::openrouter::DEFAULT_STT_MODEL.to_string());
+        self.openrouter_tts_model =
+            crate::openrouter::validate_model_id(&self.openrouter_tts_model)
+                .unwrap_or_else(|_| crate::openrouter::DEFAULT_TTS_MODEL.to_string());
+        self.openrouter_tts_voice =
+            crate::openrouter::validate_voice_id(&self.openrouter_tts_voice)
+                .unwrap_or_else(|_| crate::openrouter::DEFAULT_TTS_VOICE.to_string());
     }
 }
 
@@ -108,8 +165,11 @@ pub fn load_guarded(app: &AppHandle) -> Result<AppSettings, String> {
     let mut settings = serde_json::from_value::<AppSettings>(raw_json)
         .map_err(|e| format!("failed to deserialize AppSettings: {e}"))?;
 
-    // Schema v2 migration: ensure ui_locale is present and bump version
-    if settings.schema_version < 2 {
+    // Missing fields are filled by serde(default), preserving existing users'
+    // language and audio preferences while adding the v3/v4 voice controls.
+    settings.normalize();
+
+    if settings.schema_version < SETTINGS_SCHEMA_VERSION {
         settings.schema_version = SETTINGS_SCHEMA_VERSION;
         if settings.ui_locale.is_empty() {
             settings.ui_locale = "system".into();
@@ -140,12 +200,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_settings_v2_default_and_migration() {
+    fn test_settings_default_and_migration() {
         let default_settings = AppSettings::default();
-        assert_eq!(default_settings.schema_version, 2);
+        assert_eq!(default_settings.schema_version, SETTINGS_SCHEMA_VERSION);
         assert_eq!(default_settings.ui_locale, "system");
+        assert_eq!(default_settings.secondary_language, "none");
+        assert!(!default_settings.spoken_feedback);
+        assert_eq!(default_settings.tts_provider, "local");
+        assert!(!default_settings.tts_uses_openrouter());
+        assert!(!default_settings.stt_uses_openrouter());
 
-        // Deserializing a v1 JSON missing ui_locale and with schema_version 1
+        // Older settings retain their primary language and gain safe voice defaults.
         let v1_json = serde_json::json!({
             "schema_version": 1,
             "setup_complete": true,
@@ -154,15 +219,59 @@ mod tests {
 
         let mut migrated: AppSettings = serde_json::from_value(v1_json).expect("deserialize v1");
         assert_eq!(migrated.schema_version, 1);
-        assert_eq!(migrated.ui_locale, "system"); // via serde(default)
+        assert_eq!(migrated.secondary_language, "none");
+        assert!(!migrated.spoken_feedback);
 
-        if migrated.schema_version < 2 {
+        if migrated.schema_version < SETTINGS_SCHEMA_VERSION {
             migrated.schema_version = SETTINGS_SCHEMA_VERSION;
             if migrated.ui_locale.is_empty() {
                 migrated.ui_locale = "system".into();
             }
         }
-        assert_eq!(migrated.schema_version, 2);
+        assert_eq!(migrated.schema_version, SETTINGS_SCHEMA_VERSION);
         assert_eq!(migrated.ui_locale, "system");
+    }
+
+    #[test]
+    fn normalize_never_trusts_renderer_engine_or_model_strings() {
+        let mut settings = AppSettings {
+            // A renderer could send any of these; unknown values must fall back
+            // to the offline defaults instead of reaching a remote endpoint.
+            stt_provider: "openrouter; rm -rf /".into(),
+            tts_provider: "OPENROUTER".into(),
+            openrouter_stt_model: "evil model/../../etc".into(),
+            openrouter_tts_model: "".into(),
+            openrouter_tts_voice: "voice\ninjection".into(),
+            ..AppSettings::default()
+        };
+        settings.normalize();
+
+        assert_eq!(settings.stt_provider, "nemotron");
+        assert_eq!(settings.tts_provider, "local");
+        assert_eq!(
+            settings.openrouter_stt_model,
+            crate::openrouter::DEFAULT_STT_MODEL
+        );
+        assert_eq!(
+            settings.openrouter_tts_model,
+            crate::openrouter::DEFAULT_TTS_MODEL
+        );
+        assert_eq!(
+            settings.openrouter_tts_voice,
+            crate::openrouter::DEFAULT_TTS_VOICE
+        );
+
+        let mut valid = AppSettings {
+            stt_provider: "openrouter".into(),
+            tts_provider: "openrouter".into(),
+            openrouter_stt_model: "openai/whisper-large-v3".into(),
+            openrouter_tts_voice: "alloy".into(),
+            ..AppSettings::default()
+        };
+        valid.normalize();
+        assert!(valid.stt_uses_openrouter());
+        assert!(valid.tts_uses_openrouter());
+        assert_eq!(valid.openrouter_stt_model, "openai/whisper-large-v3");
+        assert_eq!(valid.openrouter_tts_voice, "alloy");
     }
 }

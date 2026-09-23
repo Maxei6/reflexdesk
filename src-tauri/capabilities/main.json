@@ -33,6 +33,7 @@
     "allow-diagnostics-preview",
     "allow-diagnostics-export",
     "allow-connect-provider",
+    "allow-tts-speak",
     "allow-test-provider",
     "allow-disconnect-provider",
     "allow-get-provider-status",

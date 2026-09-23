@@ -31,8 +31,8 @@ struct LocalEndpoint {
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct SttStatus {
-    pub provider: &'static str,
-    pub model: &'static str,
+    pub provider: String,
+    pub model: String,
     pub runtime_found: bool,
     pub running: bool,
     pub ready: bool,
@@ -586,14 +586,33 @@ fn status_for_backend(app: &AppHandle, backend: &HttpSttBackend) -> SttStatus {
         .unwrap_or(false);
 
     SttStatus {
-        provider: PROVIDER,
-        model: MODEL,
+        provider: PROVIDER.to_string(),
+        model: MODEL.to_string(),
         runtime_found: runtime_path(app).is_some(),
         running: backend.child_running(),
         ready: backend.health() && model_ready,
         endpoint: endpoint.map(|value| format!("127.0.0.1:{}", value.port)),
         native_streaming_supported: false,
         active_backend: "http".to_string(),
+    }
+}
+
+/// Status for the opt-in OpenRouter transcription engine.
+///
+/// The local model cache and CrispASR runtime are deliberately not required
+/// here: with a remote engine selected, "ready" means the request can legally
+/// be made (online AI enabled and a vault key connected).
+fn status_for_remote(settings: &crate::settings::AppSettings) -> SttStatus {
+    let key_connected = settings.openrouter_secret_ref.is_some();
+    SttStatus {
+        provider: "openrouter".to_string(),
+        model: settings.openrouter_stt_model.clone(),
+        runtime_found: true,
+        running: key_connected,
+        ready: settings.allow_online_ai && key_connected,
+        endpoint: None,
+        native_streaming_supported: false,
+        active_backend: "openrouter".to_string(),
     }
 }
 
@@ -653,11 +672,57 @@ fn wav_bytes(samples: &[i16], sample_rate: u32) -> Vec<u8> {
 // ---------------------------------------------------------------------------
 
 pub fn status(app: &AppHandle, state: &SttState) -> SttStatus {
+    let settings = app
+        .state::<crate::settings::SettingsState>()
+        .snapshot();
+    if settings.stt_uses_openrouter() {
+        return status_for_remote(&settings);
+    }
     status_for_backend(app, &state.http)
 }
 
 pub fn start(app: &AppHandle, state: &SttState) -> Result<SttStatus, String> {
     state.http.start(app)
+}
+
+/// Transcribes one final utterance with whichever engine the user selected.
+///
+/// The remote branch never falls back to the local engine: a cloud failure is
+/// reported as-is so the user can act on it instead of silently getting a
+/// different (or stale) transcript.
+fn transcribe_selected(
+    app: &AppHandle,
+    state: &SttState,
+    samples: &[i16],
+    sample_rate: u32,
+    language: &str,
+) -> Result<Transcript, String> {
+    let settings = app
+        .state::<crate::settings::SettingsState>()
+        .snapshot();
+
+    if settings.stt_uses_openrouter() {
+        let started = Instant::now();
+        let api_key = crate::openrouter::api_key(app, &settings)?;
+        let wav = wav_bytes(samples, sample_rate);
+        let text = crate::openrouter::transcribe_wav_at(
+            crate::openrouter::API_BASE,
+            &api_key,
+            &settings.openrouter_stt_model,
+            settings.allow_online_ai,
+            &wav,
+            language,
+        )?;
+        return Ok(Transcript {
+            text,
+            provider: "openrouter",
+            latency_ms: started.elapsed().as_millis(),
+        });
+    }
+
+    state
+        .http
+        .transcribe_final(app, samples, sample_rate, language)
 }
 
 pub fn transcribe(
@@ -667,9 +732,7 @@ pub fn transcribe(
     sample_rate: u32,
     language: String,
 ) -> Result<Transcript, String> {
-    let transcript = state
-        .http
-        .transcribe_final(app, &samples, sample_rate, &language)?;
+    let transcript = transcribe_selected(app, state, &samples, sample_rate, &language)?;
     state.tracker.record_latency(transcript.latency_ms as u64);
     Ok(transcript)
 }
@@ -701,6 +764,14 @@ pub fn stream_chunk(
         return Err("invalid-transcript-nonce".into());
     }
 
+    // Remote transcription is opt-in per utterance and never speculative: no
+    // cloud partial is generated, because a partial is only ever a hint for
+    // the HUD and must not cost a request (or leak audio) on its own.
+    let settings = app
+        .state::<crate::settings::SettingsState>()
+        .snapshot();
+    let remote = settings.stt_uses_openrouter();
+
     // 2. Bounds check on input chunk (prevent unbounded memory consumption)
     if samples.len() > (sample_rate as usize * 30) {
         return Err("audio chunk exceeds 30s limit".into());
@@ -728,7 +799,12 @@ pub fn stream_chunk(
 
         if is_final {
             accumulated = std::mem::take(&mut session.samples);
-        } else if partial_hint.as_ref().map(|t| t.trim().is_empty()).unwrap_or(true) {
+        } else if !remote
+            && partial_hint
+                .as_ref()
+                .map(|t| t.trim().is_empty())
+                .unwrap_or(true)
+        {
             // Produce genuine partial hypotheses from the authenticated local
             // backend at a bounded cadence. We re-run inference over the current
             // utterance at most about once per 800 ms of newly received audio.
@@ -817,9 +893,7 @@ pub fn stream_chunk(
         };
 
         let transcript =
-            state
-                .http
-                .transcribe_final(app, &samples_to_transcribe, sample_rate, &language)?;
+            transcribe_selected(app, state, &samples_to_transcribe, sample_rate, &language)?;
 
         state.tracker.record_latency(transcript.latency_ms as u64);
 
@@ -902,5 +976,38 @@ mod tests {
         let state = SttState::new();
         assert_eq!(state.tracker().snapshot().provider, "nemotron");
         assert!(state.shutdown().is_ok());
+    }
+
+    #[test]
+    fn remote_status_requires_opt_in_and_a_connected_key() {
+        let mut settings = crate::settings::AppSettings {
+            stt_provider: "openrouter".into(),
+            openrouter_stt_model: "openai/whisper-large-v3".into(),
+            ..Default::default()
+        };
+
+        // Selected but unusable: no key, no opt-in. The engine must not claim
+        // ready, because a ready engine is what opens the microphone.
+        let status = status_for_remote(&settings);
+        assert_eq!(status.provider, "openrouter");
+        assert_eq!(status.active_backend, "openrouter");
+        assert!(!status.ready);
+        assert!(status.endpoint.is_none());
+        assert!(!status.native_streaming_supported);
+
+        settings.openrouter_secret_ref = Some(crate::secrets::SecretRef {
+            provider: "openrouter".into(),
+            id: "sec_openrouter_test".into(),
+        });
+        assert!(status_for_remote(&settings).running);
+        assert!(
+            !status_for_remote(&settings).ready,
+            "online AI is still disabled, so no request may be made"
+        );
+
+        settings.allow_online_ai = true;
+        let ready = status_for_remote(&settings);
+        assert!(ready.ready);
+        assert_eq!(ready.model, "openai/whisper-large-v3");
     }
 }

@@ -40,6 +40,7 @@ fn main() {
             "stt_stream_chunk",
             "stt_cancel_stream",
             "stt_baseline_metrics",
+            "tts_speak",
             "get_diagnostics_preview",
             "export_diagnostics",
             "quit_app",

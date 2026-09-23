@@ -105,6 +105,11 @@ description = "Stream audio chunks and cancel active streaming sessions (overlay
 commands.allow = ["stt_stream_chunk", "stt_cancel_stream", "stt_baseline_metrics"]
 
 [[permission]]
+identifier = "allow-tts-speak"
+description = "Synthesize a bounded spoken reply via the opt-in OpenRouter voice (main window only)."
+commands.allow = ["tts_speak"]
+
+[[permission]]
 identifier = "allow-hardware-profile"
 description = "Inspect detected hardware profile (main window only)."
 commands.allow = ["get_hardware_profile"]
