@@ -11,8 +11,9 @@
 //!   the planner may plan, it may NEVER execute.
 //! - Deterministic health checks and failure modes.
 //! - Model acquisition via [`ModelManager`] where the plan requires weights.
-//! - Fresh install with no server or model reports `planner-unavailable`
-//!   and keeps base app useful via deterministic router.
+//! - A built-in deterministic planner is always available on fresh installs.
+//!   Optional local/remote model backends improve ambiguous requests but are never
+//!   required for ordinary multi-step app/browser/harness commands.
 
 use std::{
     collections::HashSet,
@@ -333,6 +334,196 @@ pub fn map_json_to_action_envelopes(
     }
 
     envelopes
+}
+
+// ---------------------------------------------------------------------------
+// Built-in zero-config planner
+// ---------------------------------------------------------------------------
+
+/// Convert a recognized tool + args into a validated, policy-gated envelope.
+fn validated_envelope(
+    session_id: &str,
+    tool: &str,
+    args: serde_json::Value,
+) -> ActionEnvelope {
+    let value = serde_json::json!({ "action": tool, "args": args });
+    map_json_to_action_envelopes(&value, session_id)
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| unknown_envelope(session_id))
+}
+
+fn strip_prefix_ci<'a>(text: &'a str, prefix: &str) -> Option<&'a str> {
+    if text.len() < prefix.len() {
+        return None;
+    }
+    text.get(..prefix.len())
+        .filter(|head| head.eq_ignore_ascii_case(prefix))
+        .map(|_| text[prefix.len()..].trim())
+}
+
+fn normalize_url_candidate(value: &str) -> Option<String> {
+    let value = value.trim().trim_matches(|c: char| matches!(c, '"' | '\'' | ',' | '.'));
+    if value.starts_with("https://") || value.starts_with("http://") {
+        return Some(value.to_string());
+    }
+    if !value.contains(' ') && value.contains('.') && value.len() <= 253 {
+        return Some(format!("https://{value}"));
+    }
+    None
+}
+
+/// Deterministic parser for the high-frequency command surface. It deliberately
+/// handles only requests it can map with high confidence; ambiguous language is
+/// escalated to an optional model backend instead of guessing.
+pub fn builtin_plan(text: &str, session_id: &str) -> Option<Vec<ActionEnvelope>> {
+    let mut normalized = text.trim().replace("\r\n", "\n");
+    if normalized.is_empty() {
+        return None;
+    }
+
+    // Preserve ordinary "and" inside search queries; split only on explicit
+    // sequencing language so a query like "cats and dogs" remains intact.
+    for sep in [" and then ", " then ", ";", "\n"] {
+        normalized = normalized.replace(sep, "\u{001f}");
+    }
+
+    let mut out = Vec::new();
+    for raw in normalized.split('\u{001f}') {
+        let clause = raw.trim().trim_matches(|c: char| matches!(c, '.' | ',' | '!' | '?')).trim();
+        if clause.is_empty() {
+            continue;
+        }
+
+        let lower = clause.to_lowercase();
+
+        // Browser search.
+        let search = ["search for ", "search ", "google ", "look up "]
+            .iter()
+            .find_map(|p| strip_prefix_ci(clause, p));
+        if let Some(query) = search.filter(|q| !q.is_empty()) {
+            out.push(validated_envelope(
+                session_id,
+                "browser.search",
+                serde_json::json!({ "query": query }),
+            ));
+            continue;
+        }
+
+        // Direct URL/navigation.
+        let navigation = ["go to ", "navigate to ", "visit "]
+            .iter()
+            .find_map(|p| strip_prefix_ci(clause, p));
+        if let Some(target) = navigation.and_then(normalize_url_candidate) {
+            out.push(validated_envelope(
+                session_id,
+                "browser.open",
+                serde_json::json!({ "url": target }),
+            ));
+            continue;
+        }
+
+        // "open X": URL if X is a domain/URL, otherwise a safe app alias.
+        if let Some(target) = strip_prefix_ci(clause, "open ") {
+            if let Some(url) = normalize_url_candidate(target) {
+                out.push(validated_envelope(
+                    session_id,
+                    "browser.open",
+                    serde_json::json!({ "url": url }),
+                ));
+            } else {
+                out.push(validated_envelope(
+                    session_id,
+                    "app.open",
+                    serde_json::json!({ "app": target }),
+                ));
+            }
+            continue;
+        }
+
+        // Explicit agent delegation.
+        let harnesses = [
+            ("ask codex ", "codex"),
+            ("ask claude code ", "claude code"),
+            ("ask claude ", "claude"),
+            ("ask gemini ", "gemini"),
+            ("ask opencode ", "opencode"),
+            ("ask kilo ", "kilo"),
+        ];
+        if let Some((prompt, harness)) = harnesses.iter().find_map(|(prefix, harness)| {
+            strip_prefix_ci(clause, prefix).map(|rest| (rest, *harness))
+        }) {
+            if !prompt.is_empty() {
+                out.push(validated_envelope(
+                    session_id,
+                    "harness.start",
+                    serde_json::json!({ "harness": harness, "prompt": prompt }),
+                ));
+                continue;
+            }
+        }
+
+        // Conservative desktop navigation. These actions use semantic selectors
+        // and remain policy/verification gated.
+        if let Some(target) = ["focus ", "switch to "]
+            .iter()
+            .find_map(|p| strip_prefix_ci(clause, p))
+        {
+            out.push(validated_envelope(
+                session_id,
+                "desktop.focus_window",
+                serde_json::json!({ "title_or_app": target }),
+            ));
+            continue;
+        }
+
+        // Unknown clause means the deterministic planner is not confident.
+        return None;
+    }
+
+    if out.is_empty() || out.iter().any(|env| env.tool == "unknown") {
+        None
+    } else {
+        Some(out)
+    }
+}
+
+/// Always-available planner used before optional model backends.
+pub struct BuiltinPlanner;
+
+impl LocalPlanner for BuiltinPlanner {
+    fn health(&self) -> bool {
+        true
+    }
+
+    fn capabilities(&self) -> PlannerCapabilities {
+        PlannerCapabilities {
+            backend_id: "builtin-deterministic".into(),
+            model_id: "builtin-v1".into(),
+            tier: "baseline".into(),
+            max_context_tokens: 0,
+            supports_streaming: false,
+            supports_multiturn: false,
+        }
+    }
+
+    fn plan(
+        &self,
+        _ctx: &PlannerContext,
+        req: &PlannerRequest,
+    ) -> Result<Vec<ActionEnvelope>, String> {
+        if is_cancelled(&req.session_id) {
+            return Err("action-cancelled".into());
+        }
+        builtin_plan(&req.text, &req.session_id)
+            .ok_or_else(|| "planner-needs-model: built-in planner could not map request safely".into())
+    }
+
+    fn cancel(&self, session_id: &str) {
+        cancel_session(session_id);
+    }
+
+    fn unload(&self) {}
 }
 
 // ---------------------------------------------------------------------------
@@ -738,6 +929,7 @@ impl LocalPlanner for OpenAiCompatibleLocalPlanner {
 
 /// Unified planner service managing backend selection, fallback, and status.
 pub struct PlannerService {
+    builtin: Arc<BuiltinPlanner>,
     native: Arc<CrispAsrChatPlanner>,
     http: Arc<OpenAiCompatibleLocalPlanner>,
     preference: Mutex<String>,
@@ -773,6 +965,7 @@ impl PlannerService {
         }
 
         Self {
+            builtin: Arc::new(BuiltinPlanner),
             native,
             http: Arc::new(http),
             preference: Mutex::new("auto".into()),
@@ -791,7 +984,9 @@ impl PlannerService {
         }
     }
 
-    /// Returns active planner implementation based on health and preference.
+    /// Returns the explicitly selected backend when requested. Auto mode keeps
+    /// the zero-config built-in planner as a guaranteed baseline; `plan()`
+    /// escalates ambiguous requests to a healthy model backend.
     pub fn select_planner(&self) -> Option<Arc<dyn LocalPlanner>> {
         let pref = self
             .preference
@@ -800,30 +995,16 @@ impl PlannerService {
             .unwrap_or_else(|_| "auto".into());
 
         match pref.as_str() {
-            "crispasr-chat" => {
-                if self.native.health() {
-                    Some(self.native.clone() as Arc<dyn LocalPlanner>)
-                } else {
-                    None
-                }
+            "crispasr-chat" if self.native.health() => {
+                Some(self.native.clone() as Arc<dyn LocalPlanner>)
             }
-            "openai-compatible-local" => {
-                if self.http.health() {
-                    Some(self.http.clone() as Arc<dyn LocalPlanner>)
-                } else {
-                    None
-                }
+            "openai-compatible-local" if self.http.health() => {
+                Some(self.http.clone() as Arc<dyn LocalPlanner>)
             }
-            _ => {
-                // "auto": prioritize native if available, else local HTTP server
-                if self.native.health() {
-                    Some(self.native.clone() as Arc<dyn LocalPlanner>)
-                } else if self.http.health() {
-                    Some(self.http.clone() as Arc<dyn LocalPlanner>)
-                } else {
-                    None
-                }
+            "builtin-deterministic" | "auto" => {
+                Some(self.builtin.clone() as Arc<dyn LocalPlanner>)
             }
+            _ => Some(self.builtin.clone() as Arc<dyn LocalPlanner>),
         }
     }
 
@@ -856,16 +1037,43 @@ impl PlannerService {
         }
     }
 
-    /// Plan request using active planner backend, or report planner-unavailable.
+    /// Plan a request. Auto mode first uses the deterministic built-in planner;
+    /// only genuinely ambiguous requests are escalated to an installed local
+    /// model or an explicitly configured compatible endpoint.
     pub fn plan(
         &self,
         ctx: &PlannerContext,
         req: &PlannerRequest,
     ) -> Result<Vec<ActionEnvelope>, String> {
-        let Some(active) = self.select_planner() else {
-            return Err("planner-unavailable: no local model or server is running".into());
-        };
-        active.plan(ctx, req)
+        let pref = self
+            .preference
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_else(|_| "auto".into());
+
+        if pref == "auto" || pref == "builtin-deterministic" {
+            if let Some(plan) = builtin_plan(&req.text, &req.session_id) {
+                return Ok(plan);
+            }
+            if pref == "builtin-deterministic" {
+                return Err("planner-needs-model: request is outside the deterministic command grammar".into());
+            }
+
+            if self.native.health() {
+                let planned = self.native.plan(ctx, req)?;
+                if planned.iter().any(|env| env.tool != "unknown") {
+                    return Ok(planned);
+                }
+            }
+            if self.http.health() {
+                return self.http.plan(ctx, req);
+            }
+            return Err("planner-needs-model: request is ambiguous and no optional model backend is available".into());
+        }
+
+        self.select_planner()
+            .ok_or_else(|| "planner-unavailable: selected backend is unavailable".to_string())?
+            .plan(ctx, req)
     }
 
     /// Cancel a running session across all backends.
@@ -962,17 +1170,26 @@ mod tests {
     }
 
     #[test]
-    fn test_fresh_install_planner_unavailable() {
+    fn test_fresh_install_builtin_planner_is_ready() {
         let settings = AppSettings::default();
         let service = PlannerService::new(&settings);
 
-        // On fresh install with no weights and no server running, health is false
-        assert!(!service.health());
+        assert!(service.health());
 
-        let req = PlannerRequest::new("s1", "open calculator", false);
-        let res = service.plan(&PlannerContext::default(), &req);
-        assert!(res.is_err());
-        assert!(res.unwrap_err().contains("planner-unavailable"));
+        let req = PlannerRequest::new(
+            "s1",
+            "open calculator then search for rust ui automation",
+            false,
+        );
+        let plan = service.plan(&PlannerContext::default(), &req).unwrap();
+        assert_eq!(plan.len(), 2);
+        assert_eq!(plan[0].tool, "app.open");
+        assert_eq!(plan[1].tool, "browser.search");
+    }
+
+    #[test]
+    fn test_builtin_planner_does_not_guess_ambiguous_request() {
+        assert!(builtin_plan("organize my work better", "s2").is_none());
     }
 
     #[test]
