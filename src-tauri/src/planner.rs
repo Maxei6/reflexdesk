@@ -458,10 +458,7 @@ pub fn builtin_plan(text: &str, session_id: &str) -> Option<Vec<ActionEnvelope>>
             continue;
         }
 
-        if let Some(target) = ["toggle ", "turn on ", "turn off "]
-            .iter()
-            .find_map(|p| strip_prefix_ci(clause, p))
-            .filter(|t| !t.is_empty())
+        if let Some(target) = strip_prefix_ci(clause, "toggle ").filter(|t| !t.is_empty())
         {
             out.push(validated_envelope(
                 session_id,
@@ -474,7 +471,7 @@ pub fn builtin_plan(text: &str, session_id: &str) -> Option<Vec<ActionEnvelope>>
             continue;
         }
 
-        if let Some(target) = ["read ", "read out "]
+        if let Some(target) = ["read out ", "read "]
             .iter()
             .find_map(|p| strip_prefix_ci(clause, p))
             .filter(|t| !t.is_empty())
@@ -1292,6 +1289,8 @@ mod tests {
     #[test]
     fn test_builtin_planner_does_not_guess_ambiguous_request() {
         assert!(builtin_plan("organize my work better", "s2").is_none());
+        assert!(builtin_plan("turn on Bluetooth", "s3").is_none());
+        assert!(builtin_plan("turn off Wi-Fi", "s4").is_none());
     }
 
     #[test]
