@@ -1180,74 +1180,249 @@ mod macos_backend {
     use super::*;
 
     pub struct MacosBackend;
+    const AX_ID_MASK: u64 = 0x4000_0000_0000_0000;
+
+    fn stable_id(parts: &str) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        parts.hash(&mut hasher);
+        AX_ID_MASK | (hasher.finish() & 0x0fff_ffff_ffff_ffff)
+    }
+
+    fn run_jxa(script: &str, envs: &[(&str, &str)]) -> Result<String, String> {
+        let mut command = std::process::Command::new("/usr/bin/osascript");
+        command.args(["-l", "JavaScript", "-e", script]);
+        for (key, value) in envs {
+            command.env(key, value);
+        }
+        let output = command
+            .output()
+            .map_err(|e| format!("macos-ax-runtime-unavailable: {e}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "macos-ax-error: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            ));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    }
+
+    fn ax_enabled() -> bool {
+        let output = std::process::Command::new("/usr/bin/osascript")
+            .args([
+                "-e",
+                "tell application \"System Events\" to return UI elements enabled",
+            ])
+            .output();
+        matches!(output, Ok(out) if out.status.success() && String::from_utf8_lossy(&out.stdout).trim() == "true")
+    }
+
+    fn ax_snapshot(target: Option<&str>) -> Result<DesktopSnapshot, String> {
+        const SCRIPT: &str = r#"
+ObjC.import('stdlib');
+function env(name){ let p=$.getenv(name); return p ? ObjC.unwrap(p) : ''; }
+function safe(fn, fallback){ try { const v=fn(); return v === undefined ? fallback : v; } catch(e){ return fallback; } }
+const se=Application('System Events');
+const target=env('REFLEX_TARGET').toLowerCase();
+const procs=se.applicationProcesses();
+let process=null;
+for (const p of procs) {
+  const pn=String(safe(()=>p.name(),''));
+  const front=Boolean(safe(()=>p.frontmost(),false));
+  let hit=!target && front;
+  if(target && pn.toLowerCase().includes(target)) hit=true;
+  if(target && !hit) {
+    const ws=safe(()=>p.windows(),[]);
+    for(const w of ws){ if(String(safe(()=>w.name(),'')).toLowerCase().includes(target)){hit=true;break;} }
+  }
+  if(hit){process=p;break;}
+}
+if(!process) throw new Error(target ? 'target application/window not found' : 'no frontmost accessible process');
+const appName=String(safe(()=>process.name(),''));
+const wins=safe(()=>process.windows(),[]);
+const windows=[];
+const elements=[];
+let seq=0;
+function roleOf(el){ return String(safe(()=>el.role(), 'control')).replace(/^AX/,'').toLowerCase(); }
+function actionsFor(role){
+  if(['button','checkbox','radiobutton','menuitem','link'].includes(role)) return ['click','invoke'];
+  if(['textfield','textarea','combobox'].includes(role)) return ['type','read'];
+  if(['scrollarea','list','table'].includes(role)) return ['scroll','read'];
+  return ['read'];
+}
+function walk(el, depth, windowIndex){
+  if(depth>10 || elements.length>=600) return;
+  const role=roleOf(el);
+  const name=String(safe(()=>el.name(),''));
+  const value=safe(()=>el.value(), null);
+  const pos=safe(()=>el.position(), null);
+  const size=safe(()=>el.size(), null);
+  const enabled=Boolean(safe(()=>el.enabled(),true));
+  const focused=Boolean(safe(()=>el.focused(),false));
+  elements.push({
+    seq:seq++, role, name,
+    value:(typeof value==='string'||typeof value==='number'||typeof value==='boolean') ? String(value) : null,
+    x:pos&&pos.length>1?Number(pos[0]):0, y:pos&&pos.length>1?Number(pos[1]):0,
+    width:size&&size.length>1?Number(size[0]):0, height:size&&size.length>1?Number(size[1]):0,
+    enabled, focused, window_index:windowIndex, actions:actionsFor(role)
+  });
+  const children=safe(()=>el.uiElements(),[]);
+  for(const child of children) walk(child,depth+1,windowIndex);
+}
+for(let i=0;i<wins.length;i++){
+  const w=wins[i];
+  const title=String(safe(()=>w.name(),''));
+  const pos=safe(()=>w.position(),null), size=safe(()=>w.size(),null);
+  windows.push({index:i,title,app:appName,
+    x:pos&&pos.length>1?Number(pos[0]):0,y:pos&&pos.length>1?Number(pos[1]):0,
+    width:size&&size.length>1?Number(size[0]):0,height:size&&size.length>1?Number(size[1]):0,
+    focused:i===0,minimized:false});
+  walk(w,0,i);
+}
+JSON.stringify({app:appName,windows,elements});
+"#;
+        let output = run_jxa(SCRIPT, &[("REFLEX_TARGET", target.unwrap_or(""))])?;
+        let value: serde_json::Value =
+            serde_json::from_str(&output).map_err(|e| format!("macos-ax-json-invalid: {e}"))?;
+        let app = value.get("app").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let mut windows = Vec::new();
+        for w in value.get("windows").and_then(|v| v.as_array()).cloned().unwrap_or_default() {
+            let title=w.get("title").and_then(|v|v.as_str()).unwrap_or("").to_string();
+            windows.push(WindowInfo{
+                id:stable_id(&format!("window|{app}|{title}")),
+                title,
+                app:app.clone(),
+                bounds:Some(ElementBounds{
+                    x:w.get("x").and_then(|v|v.as_f64()).unwrap_or(0.0),
+                    y:w.get("y").and_then(|v|v.as_f64()).unwrap_or(0.0),
+                    width:w.get("width").and_then(|v|v.as_f64()).unwrap_or(0.0),
+                    height:w.get("height").and_then(|v|v.as_f64()).unwrap_or(0.0),
+                }),
+                is_focused:w.get("focused").and_then(|v|v.as_bool()).unwrap_or(false),
+                is_minimized:w.get("minimized").and_then(|v|v.as_bool()).unwrap_or(false),
+            });
+        }
+        let focused_window=windows.iter().find(|w|w.is_focused).cloned().or_else(||windows.first().cloned());
+        let mut elements=Vec::new();
+        for item in value.get("elements").and_then(|v|v.as_array()).cloned().unwrap_or_default() {
+            let role=item.get("role").and_then(|v|v.as_str()).unwrap_or("control").to_string();
+            let name=item.get("name").and_then(|v|v.as_str()).unwrap_or("").to_string();
+            let seq=item.get("seq").and_then(|v|v.as_u64()).unwrap_or(0);
+            let window_index=item.get("window_index").and_then(|v|v.as_u64()).unwrap_or(0) as usize;
+            let window_id=windows.get(window_index).map(|w|w.id);
+            let id=stable_id(&format!("element|{app}|{window_index}|{role}|{name}|{seq}"));
+            elements.push(DesktopElement{
+                id,role,name,
+                value:item.get("value").and_then(|v|v.as_str()).map(str::to_owned),
+                bounds:Some(ElementBounds{
+                    x:item.get("x").and_then(|v|v.as_f64()).unwrap_or(0.0),
+                    y:item.get("y").and_then(|v|v.as_f64()).unwrap_or(0.0),
+                    width:item.get("width").and_then(|v|v.as_f64()).unwrap_or(0.0),
+                    height:item.get("height").and_then(|v|v.as_f64()).unwrap_or(0.0),
+                }),
+                enabled:item.get("enabled").and_then(|v|v.as_bool()).unwrap_or(true),
+                focused:item.get("focused").and_then(|v|v.as_bool()).unwrap_or(false),
+                actions:item.get("actions").and_then(|v|v.as_array()).map(|a|a.iter().filter_map(|v|v.as_str().map(str::to_owned)).collect()).unwrap_or_default(),
+                context:Some(format!("ax|{app}|{window_index}|{seq}")),
+                window_id,
+            });
+        }
+        let generation=SNAPSHOT_GENERATION.fetch_add(1,Ordering::SeqCst);
+        let snapshot=DesktopSnapshot{active_app:Some(app),windows,focused_window,elements,generation};
+        cache_snapshot(snapshot.clone());
+        Ok(snapshot)
+    }
+
+    fn ax_action(element: &DesktopElement, action: &str, text: Option<&str>) -> Result<String,String> {
+        const SCRIPT: &str = r#"
+ObjC.import('stdlib');
+function env(name){let p=$.getenv(name);return p?ObjC.unwrap(p):'';}
+function safe(fn, fallback){try{const v=fn();return v===undefined?fallback:v;}catch(e){return fallback;}}
+const se=Application('System Events');
+const appName=env('REFLEX_APP'), targetName=env('REFLEX_NAME'), targetRole=env('REFLEX_ROLE');
+const procs=se.applicationProcesses.whose({name:appName})();
+if(!procs.length) throw new Error('application not running');
+function roleOf(el){return String(safe(()=>el.role(),'control')).replace(/^AX/,'').toLowerCase();}
+function find(el,depth){
+ if(depth>12) return null;
+ if(String(safe(()=>el.name(),''))===targetName && (!targetRole || roleOf(el)===targetRole)) return el;
+ const kids=safe(()=>el.uiElements(),[]);
+ for(const k of kids){const hit=find(k,depth+1);if(hit)return hit;}
+ return null;
+}
+let hit=null; for(const w of safe(()=>procs[0].windows(),[])){hit=find(w,0);if(hit)break;}
+if(!hit) throw new Error('element not found');
+const action=env('REFLEX_ACTION');
+if(action==='invoke'){try{hit.performAction('AXPress');}catch(e){hit.focused=true;se.keyCode(36);} 'ok';}
+else if(action==='type'){try{hit.value=env('REFLEX_TEXT');}catch(e){hit.focused=true;se.keystroke(env('REFLEX_TEXT'));} 'ok';}
+else if(action==='read'){JSON.stringify(String(safe(()=>hit.value(),safe(()=>hit.name(),''))));}
+else if(action==='scroll-up'||action==='scroll-down'){hit.focused=true;se.keyCode(action==='scroll-up'?116:121);'ok';}
+else throw new Error('unsupported action');
+"#;
+        let app=element.context.as_deref().and_then(|v|v.split('|').nth(1)).unwrap_or("");
+        run_jxa(SCRIPT,&[
+            ("REFLEX_APP",app),("REFLEX_NAME",element.name.as_str()),("REFLEX_ROLE",element.role.as_str()),
+            ("REFLEX_ACTION",action),("REFLEX_TEXT",text.unwrap_or(""))
+        ])
+    }
+
+    fn window_action(title_or_app: Option<&str>, action: &str) -> Result<WindowInfo,String> {
+        const SCRIPT:&str=r#"
+ObjC.import('stdlib'); function env(n){let p=$.getenv(n);return p?ObjC.unwrap(p):'';}
+function safe(fn,f){try{const v=fn();return v===undefined?f:v;}catch(e){return f;}}
+const se=Application('System Events'), q=env('REFLEX_QUERY').toLowerCase(), action=env('REFLEX_ACTION');
+for(const p of se.applicationProcesses()){
+ const app=String(safe(()=>p.name(),''));
+ const ws=safe(()=>p.windows(),[]);
+ for(const w of ws){
+   const title=String(safe(()=>w.name(),''));
+   if(app.toLowerCase().includes(q)||title.toLowerCase().includes(q)){
+     if(action==='focus'){p.frontmost=true;try{w.focused=true;}catch(e){}}
+     else if(action==='close'){try{w.performAction('AXClose');}catch(e){try{w.buttons.whose({subrole:'AXCloseButton'})()[0].performAction('AXPress');}catch(_) {throw e;}}}
+     const pos=safe(()=>w.position(),[0,0]),size=safe(()=>w.size(),[0,0]);
+     console.log(JSON.stringify({title,app,x:Number(pos[0]||0),y:Number(pos[1]||0),width:Number(size[0]||0),height:Number(size[1]||0)}));
+     $.exit(0);
+   }
+ }
+}
+throw new Error('window not found');
+"#;
+        let query=title_or_app.ok_or_else(||"invalid-args: macOS focus/close requires title_or_app".to_string())?;
+        let raw=run_jxa(SCRIPT,&[("REFLEX_QUERY",query),("REFLEX_ACTION",action)])?;
+        let v:serde_json::Value=serde_json::from_str(raw.lines().last().unwrap_or(&raw)).map_err(|e|format!("macos-window-json-invalid: {e}"))?;
+        let title=v.get("title").and_then(|v|v.as_str()).unwrap_or("").to_string();
+        let app=v.get("app").and_then(|v|v.as_str()).unwrap_or("").to_string();
+        Ok(WindowInfo{id:stable_id(&format!("window|{app}|{title}")),title,app,bounds:Some(ElementBounds{
+            x:v.get("x").and_then(|v|v.as_f64()).unwrap_or(0.0),y:v.get("y").and_then(|v|v.as_f64()).unwrap_or(0.0),
+            width:v.get("width").and_then(|v|v.as_f64()).unwrap_or(0.0),height:v.get("height").and_then(|v|v.as_f64()).unwrap_or(0.0)
+        }),is_focused:action=="focus",is_minimized:false})
+    }
 
     impl DesktopBackend for MacosBackend {
         fn health(&self) -> DesktopHealth {
-            DesktopHealth {
-                healthy: false,
-                platform: "macos",
-                permissions_granted: false,
-                details: "macOS AX backend is not linked in this build; no action will be reported as successful".into(),
-                recovery_instructions: Some(
-                    "Install a build with the native AX adapter, then grant Accessibility permission in System Settings > Privacy & Security > Accessibility."
-                        .into(),
-                ),
+            let granted=ax_enabled();
+            DesktopHealth{
+                healthy:granted,platform:"macos",permissions_granted:granted,
+                details:if granted{"macOS Accessibility semantic adapter available through System Events/AX".into()}else{"macOS Accessibility permission is not granted".into()},
+                recovery_instructions:if granted{None}else{Some("Grant ReflexDesk Accessibility permission in System Settings > Privacy & Security > Accessibility, then restart ReflexDesk.".into())},
             }
         }
-
-        fn inspect(&self, _target_window: Option<&str>) -> Result<DesktopSnapshot, String> {
-            Err("desktop-backend-unavailable: native macOS AX adapter is not linked".into())
+        fn inspect(&self,target_window:Option<&str>)->Result<DesktopSnapshot,String>{
+            if !ax_enabled(){return Err("permission-required: macOS Accessibility permission is not granted".into());}
+            ax_snapshot(target_window)
         }
-
-        fn focus_window(
-            &self,
-            _window_id: Option<u64>,
-            _title_or_app: Option<&str>,
-        ) -> Result<WindowInfo, String> {
-            Err("desktop-backend-unavailable: native macOS AX focus is not linked".into())
+        fn focus_window(&self,_window_id:Option<u64>,title_or_app:Option<&str>)->Result<WindowInfo,String>{window_action(title_or_app,"focus")}
+        fn close_window(&self,_window_id:Option<u64>,title_or_app:Option<&str>)->Result<(),String>{window_action(title_or_app,"close").map(|_|())}
+        fn invoke_element(&self,element:&DesktopElement,_action:&str)->Result<(),String>{ax_action(element,"invoke",None).map(|_|())}
+        fn click_element(&self,element:&DesktopElement)->Result<(),String>{ax_action(element,"invoke",None).map(|_|())}
+        fn type_element(&self,element:&DesktopElement,text:&str,_clear_first:bool)->Result<(),String>{ax_action(element,"type",Some(text)).map(|_|())}
+        fn press_key(&self,key:&str,modifiers:&[&str])->Result<(),String>{
+            const SCRIPT:&str=r#"ObjC.import('stdlib');function env(n){let p=$.getenv(n);return p?ObjC.unwrap(p):'';}const se=Application('System Events');const k=env('REFLEX_KEY').toLowerCase();const mods=env('REFLEX_MODS').split(',').filter(Boolean);const map={enter:36,return:36,tab:48,escape:53,esc:53,space:49,backspace:51,delete:117,up:126,down:125,left:123,right:124};if(map[k]!==undefined){se.keyCode(map[k],{using:mods.map(x=>x+' down')});}else if(k.length===1){se.keystroke(k,{using:mods.map(x=>x+' down')});}else{throw new Error('unsupported key');}"#;
+            let normalized:Vec<String>=modifiers.iter().map(|m|match m.to_lowercase().as_str(){"ctrl"|"control"=>"control","alt"|"option"=>"option","shift"=>"shift","cmd"|"command"|"meta"=>"command",_=>*m}.to_string()).collect();
+            run_jxa(SCRIPT,&[("REFLEX_KEY",key),("REFLEX_MODS",&normalized.join(","))]).map(|_|())
         }
-
-        fn close_window(
-            &self,
-            _window_id: Option<u64>,
-            _title_or_app: Option<&str>,
-        ) -> Result<(), String> {
-            Err("desktop-backend-unavailable: native macOS AX close is not linked".into())
-        }
-
-        fn invoke_element(&self, _element: &DesktopElement, _action: &str) -> Result<(), String> {
-            Err("desktop-backend-unavailable: native macOS AX invoke is not linked".into())
-        }
-
-        fn click_element(&self, _element: &DesktopElement) -> Result<(), String> {
-            Err("desktop-backend-unavailable: native macOS AX click is not linked".into())
-        }
-
-        fn type_element(
-            &self,
-            _element: &DesktopElement,
-            _text: &str,
-            _clear_first: bool,
-        ) -> Result<(), String> {
-            Err("desktop-backend-unavailable: native macOS AX value setting is not linked".into())
-        }
-
-        fn press_key(&self, _key: &str, _modifiers: &[&str]) -> Result<(), String> {
-            Err("desktop-backend-unavailable: native macOS keyboard adapter is not linked".into())
-        }
-
-        fn scroll_element(
-            &self,
-            _element: &DesktopElement,
-            _direction: &str,
-            _amount: f64,
-        ) -> Result<(), String> {
-            Err("desktop-backend-unavailable: native macOS AX scroll is not linked".into())
-        }
-
-        fn read_element(&self, _element: &DesktopElement) -> Result<String, String> {
-            Err("desktop-backend-unavailable: native macOS AX read is not linked".into())
-        }
+        fn scroll_element(&self,element:&DesktopElement,direction:&str,_amount:f64)->Result<(),String>{ax_action(element,if direction.eq_ignore_ascii_case("up"){"scroll-up"}else{"scroll-down"},None).map(|_|())}
+        fn read_element(&self,element:&DesktopElement)->Result<String,String>{let raw=ax_action(element,"read",None)?;Ok(serde_json::from_str::<String>(&raw).unwrap_or(raw))}
     }
 }
 
