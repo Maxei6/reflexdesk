@@ -1,13 +1,13 @@
 {
   "version": 1,
-  "last_reviewed_at": "2026-09-22T00:00:00Z",
+  "last_reviewed_at": "2026-09-23T00:00:00Z",
   "exit_criteria_met": false,
   "summary": {
     "ready_for_release": false,
     "open_blockers": 4,
-    "open_major_defects": 2,
+    "open_major_defects": 0,
     "known_limitations": 2,
-    "status": "BLOCKED ON CODE, HARDWARE, AND CREDENTIALS"
+    "status": "BLOCKED ON LIVE ACCEPTANCE, HARDWARE, AND CREDENTIALS"
   },
   "blockers": [
     {
@@ -36,43 +36,43 @@
     },
     {
       "id": "BLK-003",
-      "title": "Cross-platform semantic desktop adapters incomplete",
+      "title": "Cross-platform semantic desktop adapters require live acceptance",
       "plan_id": "02_DESKTOP_CONTROL",
       "severity": "RELEASE_BLOCKER",
-      "status": "OPEN",
+      "status": "ACCEPTANCE_PENDING",
       "owner": "Desktop Control",
-      "description": "Windows currently uses an HWND/control-message fallback without UIA patterns; macOS AX and Linux AT-SPI actions fail closed because their native adapters are not linked.",
-      "blocking_reason": "The Plan 02 definition of done requires representative semantic tasks on every supported OS.",
-      "resolution_criteria": "Implement Windows UIA, macOS AX, and Linux AT-SPI adapters and pass representative inspect/act/verify tasks on each supported OS.",
+      "description": "Windows UI Automation with Win32 fallback, macOS Accessibility/AX, and Linux AT-SPI semantic adapters are implemented. Representative physical desktop inspect/act/verify tasks have not yet been executed across the supported OS matrix.",
+      "blocking_reason": "Plan 02 code is implemented, but its definition of done requires representative live semantic tasks on each supported OS.",
+      "resolution_criteria": "Pass representative inspect/act/verify tasks on physical Windows, macOS, and Linux desktop sessions, including permissions, modal dialogs, DPI and privilege-boundary cases.",
       "verification_step": "Run the Plan 02 representative desktop task matrix on Windows, macOS, and Linux and attach reproducible logs."
     },
     {
       "id": "BLK-004",
-      "title": "Signed updater activation and rollback unavailable",
+      "title": "Signed updater activation and rollback require clean-machine acceptance",
       "plan_id": "17_SIGNING_UPDATER_RELEASES",
       "severity": "RELEASE_BLOCKER",
-      "status": "OPEN",
+      "status": "ACCEPTANCE_PENDING",
       "owner": "Release Engineering",
-      "description": "The updater cryptographically verifies and stages artifacts but intentionally does not activate installers or restore a previous application version.",
-      "blocking_reason": "A staged file is not an installed update, and the rollback command was removed because it previously reported success without restoring anything.",
-      "resolution_criteria": "Integrate the signed platform installer activation path, persist rollback metadata only after a successful backup, and prove recovery from interrupted and failed updates.",
+      "description": "Verified artifact staging, installer extension preservation, platform activation, executable backup metadata, and deferred rollback recovery are implemented. A production-signed clean-machine update/forced-failure rollback drill is still required.",
+      "blocking_reason": "Release acceptance requires proving the implemented activation/recovery path with production-signed artifacts on clean Windows and macOS machines.",
+      "resolution_criteria": "Execute a production-signed install, forced-failure rollback, and clean-machine recovery drill on Windows and macOS and attach reproducible logs.",
       "verification_step": "Execute a signed install, forced-failure rollback, and clean-machine recovery drill on Windows and macOS."
     }
   ],
   "known_limitations": [
     {
       "id": "LIM-001",
-      "title": "Native streaming STT runs via authenticated HTTP loopback seam",
+      "title": "Direct in-process CrispASR C-ABI streaming is unavailable upstream",
       "plan_id": "12_STT_NATIVE_STREAMING",
-      "description": "Production STT uses the Moonshine/Nemotron HTTP loopback engine with session tokens. Native C++ in-process streaming seam is defined with native_streaming_supported: false.",
-      "impact": "Low. Offline voice control works end-to-end; native in-process streaming can be activated in a subsequent release without API break."
+      "description": "ReflexDesk streams PCM into Rust and generates genuine partial hypotheses through its authenticated ephemeral loopback engine. The upstream CrispASR release does not currently expose a stable packaged shared-library ABI, so native_streaming_supported remains false rather than enabling the unauthenticated 0.0.0.0 listener.",
+      "impact": "Low for functionality: offline partial/final voice control works through the authenticated local engine. Direct in-process FFI remains a future optimization once a stable upstream ABI exists."
     },
     {
       "id": "LIM-002",
-      "title": "Local planner requires explicit local model download or OpenAI-compatible endpoint",
+      "title": "Ambiguous planner requests may require an optional model backend",
       "plan_id": "04_LOCAL_PLANNER",
-      "description": "Deterministic reflex routing (Tier 0) handles direct commands instantly without models. Complex multi-step planner requires local model download or remote key.",
-      "impact": "Low. Fail-closed fallback reports planner-unavailable without crashing."
+      "description": "The built-in planner is available on fresh install and handles explicit app/browser/desktop-focus/agent and sequenced commands. Requests outside the deterministic grammar fail closed with planner-needs-model unless an optional local model endpoint is configured.",
+      "impact": "Low for ordinary explicit control; intentionally ambiguous or open-ended planning is not guessed without a model."
     }
   ],
   "process": {
