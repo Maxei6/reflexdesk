@@ -1435,88 +1435,264 @@ mod linux_backend {
     use super::*;
 
     pub struct LinuxBackend;
+    const ATSPI_ID_MASK:u64=0x4000_0000_0000_0000;
 
-    impl DesktopBackend for LinuxBackend {
-        fn health(&self) -> DesktopHealth {
-            let at_spi_present = std::path::Path::new("/run/user")
-                .join(std::env::var("UID").unwrap_or_else(|_| "1000".into()))
-                .join("at-spi/bus")
-                .exists()
-                || std::env::var("AT_SPI_BUS_ADDRESS").is_ok();
+    fn stable_id(parts:&str)->u64{
+        use std::hash::{Hash,Hasher};
+        let mut h=std::collections::hash_map::DefaultHasher::new();
+        parts.hash(&mut h);
+        ATSPI_ID_MASK|(h.finish()&0x0fff_ffff_ffff_ffff)
+    }
 
-            DesktopHealth {
-                healthy: false,
-                platform: "linux",
-                permissions_granted: at_spi_present,
-                details: if at_spi_present {
-                    "Linux AT-SPI2 bus is active, but the native semantic adapter is not linked in this build".into()
-                } else {
-                    "Linux AT-SPI2 bus is not detected and the native semantic adapter is not linked".into()
-                },
-                recovery_instructions: Some(
-                    "Install a build with the native AT-SPI adapter; if needed enable accessibility with: gsettings set org.gnome.desktop.interface toolkit-accessibility true"
-                        .into(),
-                ),
-            }
+    fn run_python(script:&str,envs:&[(&str,&str)])->Result<String,String>{
+        let mut command=std::process::Command::new("python3");
+        command.args(["-c",script]);
+        for(key,value) in envs{command.env(key,value);}
+        let output=command.output().map_err(|e|format!("atspi-python-unavailable: {e}"))?;
+        if !output.status.success(){
+            return Err(format!("atspi-error: {}",String::from_utf8_lossy(&output.stderr).trim()));
         }
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    }
 
-        fn inspect(&self, _target_window: Option<&str>) -> Result<DesktopSnapshot, String> {
-            let health = self.health();
-            Err(format!(
-                "desktop-backend-unavailable: AT-SPI semantic adapter is not linked. Recovery: {}",
-                health.recovery_instructions.unwrap_or_default()
-            ))
-        }
+    fn atspi_runtime_ready()->bool{
+        std::process::Command::new("python3")
+            .args(["-c","import pyatspi; d=pyatspi.Registry.getDesktop(0); assert d is not None"])
+            .output()
+            .map(|o|o.status.success())
+            .unwrap_or(false)
+    }
 
-        fn focus_window(
-            &self,
-            _window_id: Option<u64>,
-            _title_or_app: Option<&str>,
-        ) -> Result<WindowInfo, String> {
-            Err("unsupported-platform: AT-SPI window focus requires active X11 or Wayland compositor".into())
+    fn atspi_snapshot(target:Option<&str>)->Result<DesktopSnapshot,String>{
+        const SCRIPT:&str=r#"
+import json, os, pyatspi
+target=os.environ.get('REFLEX_TARGET','').lower()
+desktop=pyatspi.Registry.getDesktop(0)
+apps=[]
+for i in range(desktop.childCount):
+    try: apps.append(desktop.getChildAtIndex(i))
+    except Exception: pass
+def has_state(obj,state):
+    try:return obj.getState().contains(state)
+    except Exception:return False
+chosen=None
+for app in apps:
+    name=str(getattr(app,'name','') or '')
+    hit=target and target in name.lower()
+    if not target:
+        for j in range(getattr(app,'childCount',0)):
+            try:
+                w=app.getChildAtIndex(j)
+                if has_state(w,pyatspi.STATE_ACTIVE) or has_state(w,pyatspi.STATE_FOCUSED):
+                    hit=True;break
+            except Exception:pass
+    if target and not hit:
+        for j in range(getattr(app,'childCount',0)):
+            try:
+                w=app.getChildAtIndex(j)
+                if target in str(getattr(w,'name','') or '').lower(): hit=True;break
+            except Exception:pass
+    if hit: chosen=app;break
+if chosen is None: raise RuntimeError('no matching accessible application')
+app_name=str(getattr(chosen,'name','') or '')
+windows=[]; elements=[]; seq=0
+def bounds(obj):
+    try:
+        e=obj.queryComponent().getExtents(pyatspi.DESKTOP_COORDS)
+        return [float(e.x),float(e.y),float(e.width),float(e.height)]
+    except Exception:return [0.0,0.0,0.0,0.0]
+def actions(obj):
+    out=[]
+    try:
+        a=obj.queryAction()
+        for i in range(a.nActions):
+            name=str(a.getName(i) or '').lower()
+            if name: out.append(name)
+        if out: out+=['invoke','click']
+    except Exception:pass
+    try: obj.queryEditableText(); out+=['type','read']
+    except Exception:pass
+    return list(dict.fromkeys(out or ['read']))
+def walk(obj,depth,wi):
+    global seq
+    if depth>12 or len(elements)>=600:return
+    try:
+        role=str(obj.getRoleName() or 'control').lower()
+        name=str(getattr(obj,'name','') or '')
+        x,y,w,h=bounds(obj)
+        value=None
+        try:value=str(obj.queryValue().currentValue)
+        except Exception:
+            try:value=str(obj.queryText().getText(0,-1))
+            except Exception:pass
+        elements.append({'seq':seq,'role':role,'name':name,'value':value,'x':x,'y':y,'width':w,'height':h,
+          'enabled':has_state(obj,pyatspi.STATE_ENABLED),'focused':has_state(obj,pyatspi.STATE_FOCUSED),'window_index':wi,'actions':actions(obj)})
+        seq+=1
+        for i in range(getattr(obj,'childCount',0)):
+            try:walk(obj.getChildAtIndex(i),depth+1,wi)
+            except Exception:pass
+    except Exception:pass
+for wi in range(getattr(chosen,'childCount',0)):
+    try:
+        w=chosen.getChildAtIndex(wi)
+        title=str(getattr(w,'name','') or '')
+        x,y,ww,hh=bounds(w)
+        active=has_state(w,pyatspi.STATE_ACTIVE) or has_state(w,pyatspi.STATE_FOCUSED)
+        windows.append({'index':wi,'title':title,'app':app_name,'x':x,'y':y,'width':ww,'height':hh,'focused':active,'minimized':False})
+        walk(w,0,wi)
+    except Exception:pass
+print(json.dumps({'app':app_name,'windows':windows,'elements':elements},separators=(',',':')))
+"#;
+        let raw=run_python(SCRIPT,&[("REFLEX_TARGET",target.unwrap_or(""))])?;
+        let value:serde_json::Value=serde_json::from_str(&raw).map_err(|e|format!("atspi-json-invalid: {e}"))?;
+        let app=value.get("app").and_then(|v|v.as_str()).unwrap_or("").to_string();
+        let mut windows=Vec::new();
+        for w in value.get("windows").and_then(|v|v.as_array()).cloned().unwrap_or_default(){
+            let title=w.get("title").and_then(|v|v.as_str()).unwrap_or("").to_string();
+            windows.push(WindowInfo{id:stable_id(&format!("window|{app}|{title}")),title,app:app.clone(),
+                bounds:Some(ElementBounds{x:w.get("x").and_then(|v|v.as_f64()).unwrap_or(0.0),y:w.get("y").and_then(|v|v.as_f64()).unwrap_or(0.0),
+                    width:w.get("width").and_then(|v|v.as_f64()).unwrap_or(0.0),height:w.get("height").and_then(|v|v.as_f64()).unwrap_or(0.0)}),
+                is_focused:w.get("focused").and_then(|v|v.as_bool()).unwrap_or(false),is_minimized:false});
         }
+        let focused_window=windows.iter().find(|w|w.is_focused).cloned().or_else(||windows.first().cloned());
+        let mut elements=Vec::new();
+        for item in value.get("elements").and_then(|v|v.as_array()).cloned().unwrap_or_default(){
+            let role=item.get("role").and_then(|v|v.as_str()).unwrap_or("control").to_string();
+            let name=item.get("name").and_then(|v|v.as_str()).unwrap_or("").to_string();
+            let seq=item.get("seq").and_then(|v|v.as_u64()).unwrap_or(0);
+            let wi=item.get("window_index").and_then(|v|v.as_u64()).unwrap_or(0) as usize;
+            elements.push(DesktopElement{id:stable_id(&format!("element|{app}|{wi}|{role}|{name}|{seq}")),role,name,
+                value:item.get("value").and_then(|v|v.as_str()).map(str::to_owned),
+                bounds:Some(ElementBounds{x:item.get("x").and_then(|v|v.as_f64()).unwrap_or(0.0),y:item.get("y").and_then(|v|v.as_f64()).unwrap_or(0.0),
+                    width:item.get("width").and_then(|v|v.as_f64()).unwrap_or(0.0),height:item.get("height").and_then(|v|v.as_f64()).unwrap_or(0.0)}),
+                enabled:item.get("enabled").and_then(|v|v.as_bool()).unwrap_or(true),focused:item.get("focused").and_then(|v|v.as_bool()).unwrap_or(false),
+                actions:item.get("actions").and_then(|v|v.as_array()).map(|a|a.iter().filter_map(|v|v.as_str().map(str::to_owned)).collect()).unwrap_or_default(),
+                context:Some(format!("atspi|{app}|{wi}|{seq}")),window_id:windows.get(wi).map(|w|w.id)});
+        }
+        let generation=SNAPSHOT_GENERATION.fetch_add(1,Ordering::SeqCst);
+        let snapshot=DesktopSnapshot{active_app:Some(app),windows,focused_window,elements,generation};
+        cache_snapshot(snapshot.clone());
+        Ok(snapshot)
+    }
 
-        fn close_window(
-            &self,
-            _window_id: Option<u64>,
-            _title_or_app: Option<&str>,
-        ) -> Result<(), String> {
-            Err("unsupported-platform: AT-SPI window close requires active X11 or Wayland compositor".into())
-        }
+    fn atspi_action(element:&DesktopElement,action:&str,text:Option<&str>)->Result<String,String>{
+        const SCRIPT:&str=r#"
+import json,os,pyatspi
+app_name=os.environ.get('REFLEX_APP',''); target_name=os.environ.get('REFLEX_NAME',''); target_role=os.environ.get('REFLEX_ROLE','').lower()
+desktop=pyatspi.Registry.getDesktop(0); app=None
+for i in range(desktop.childCount):
+    x=desktop.getChildAtIndex(i)
+    if str(getattr(x,'name','') or '')==app_name: app=x;break
+if app is None: raise RuntimeError('application not found')
+def find(obj,depth=0):
+    if depth>14:return None
+    try:
+        if str(getattr(obj,'name','') or '')==target_name and (not target_role or str(obj.getRoleName() or '').lower()==target_role): return obj
+    except Exception:pass
+    for i in range(getattr(obj,'childCount',0)):
+        try:
+            hit=find(obj.getChildAtIndex(i),depth+1)
+            if hit:return hit
+        except Exception:pass
+    return None
+el=find(app)
+if el is None: raise RuntimeError('element not found')
+action=os.environ.get('REFLEX_ACTION','')
+if action=='invoke':
+    done=False
+    try:
+        ai=el.queryAction()
+        preferred=['click','press','activate','toggle','select']
+        for preferred_name in preferred:
+            for i in range(ai.nActions):
+                if preferred_name in str(ai.getName(i) or '').lower():
+                    if ai.doAction(i): done=True
+                    break
+            if done:break
+    except Exception:pass
+    if not done:
+        try: done=bool(el.queryComponent().grabFocus())
+        except Exception:pass
+    if not done: raise RuntimeError('no invokable AT-SPI action')
+    print('ok')
+elif action=='type':
+    t=os.environ.get('REFLEX_TEXT','')
+    try: el.queryEditableText().setTextContents(t)
+    except Exception as e: raise RuntimeError('editable text unavailable: '+str(e))
+    print('ok')
+elif action=='read':
+    value=''
+    try:value=str(el.queryText().getText(0,-1))
+    except Exception:
+        try:value=str(el.queryValue().currentValue)
+        except Exception:value=str(getattr(el,'name','') or '')
+    print(json.dumps(value))
+elif action in ('scroll-up','scroll-down'):
+    try: el.queryComponent().grabFocus()
+    except Exception:pass
+    sym='Page_Up' if action=='scroll-up' else 'Page_Down'
+    pyatspi.Registry.generateKeyboardEvent(0,sym,pyatspi.KEY_SYM)
+    print('ok')
+else: raise RuntimeError('unsupported action')
+"#;
+        let app=element.context.as_deref().and_then(|v|v.split('|').nth(1)).unwrap_or("");
+        run_python(SCRIPT,&[("REFLEX_APP",app),("REFLEX_NAME",element.name.as_str()),("REFLEX_ROLE",element.role.as_str()),("REFLEX_ACTION",action),("REFLEX_TEXT",text.unwrap_or(""))])
+    }
 
-        fn invoke_element(&self, _element: &DesktopElement, _action: &str) -> Result<(), String> {
-            Err("unsupported-platform: AT-SPI element invoke not supported in headless mode".into())
-        }
+    fn focus_or_close(query:&str,action:&str)->Result<WindowInfo,String>{
+        const SCRIPT:&str=r#"
+import json,os,pyatspi
+q=os.environ.get('REFLEX_QUERY','').lower(); action=os.environ.get('REFLEX_ACTION','')
+d=pyatspi.Registry.getDesktop(0)
+def bounds(o):
+ try:
+  e=o.queryComponent().getExtents(pyatspi.DESKTOP_COORDS);return [e.x,e.y,e.width,e.height]
+ except Exception:return [0,0,0,0]
+for ai in range(d.childCount):
+ app=d.getChildAtIndex(ai); an=str(getattr(app,'name','') or '')
+ for wi in range(getattr(app,'childCount',0)):
+  w=app.getChildAtIndex(wi); title=str(getattr(w,'name','') or '')
+  if q in an.lower() or q in title.lower():
+   if action=='focus':
+    if not w.queryComponent().grabFocus(): raise RuntimeError('window focus rejected')
+   elif action=='close':
+    a=w.queryAction();done=False
+    for i in range(a.nActions):
+     if 'close' in str(a.getName(i) or '').lower(): done=bool(a.doAction(i));break
+    if not done: raise RuntimeError('window has no close action')
+   x,y,ww,hh=bounds(w);print(json.dumps({'title':title,'app':an,'x':x,'y':y,'width':ww,'height':hh}));raise SystemExit(0)
+raise RuntimeError('window not found')
+"#;
+        let raw=run_python(SCRIPT,&[("REFLEX_QUERY",query),("REFLEX_ACTION",action)])?;
+        let v:serde_json::Value=serde_json::from_str(raw.lines().last().unwrap_or(&raw)).map_err(|e|format!("atspi-window-json-invalid: {e}"))?;
+        let title=v.get("title").and_then(|v|v.as_str()).unwrap_or("").to_string();
+        let app=v.get("app").and_then(|v|v.as_str()).unwrap_or("").to_string();
+        Ok(WindowInfo{id:stable_id(&format!("window|{app}|{title}")),title,app,bounds:Some(ElementBounds{
+            x:v.get("x").and_then(|v|v.as_f64()).unwrap_or(0.0),y:v.get("y").and_then(|v|v.as_f64()).unwrap_or(0.0),
+            width:v.get("width").and_then(|v|v.as_f64()).unwrap_or(0.0),height:v.get("height").and_then(|v|v.as_f64()).unwrap_or(0.0)}),
+            is_focused:action=="focus",is_minimized:false})
+    }
 
-        fn click_element(&self, _element: &DesktopElement) -> Result<(), String> {
-            Err("unsupported-platform: AT-SPI click not supported in headless mode".into())
+    impl DesktopBackend for LinuxBackend{
+        fn health(&self)->DesktopHealth{
+            let bus_present=std::env::var("AT_SPI_BUS_ADDRESS").is_ok()||std::env::var("DBUS_SESSION_BUS_ADDRESS").is_ok();
+            let runtime=bus_present&&atspi_runtime_ready();
+            DesktopHealth{healthy:runtime,platform:"linux",permissions_granted:bus_present,
+                details:if runtime{"Linux AT-SPI semantic adapter available".into()}else{"AT-SPI runtime is unavailable in this desktop session".into()},
+                recovery_instructions:if runtime{None}else{Some("Enable desktop accessibility and install the distro AT-SPI Python binding (for example python3-pyatspi), then restart ReflexDesk.".into())}}
         }
-
-        fn type_element(
-            &self,
-            _element: &DesktopElement,
-            _text: &str,
-            _clear_first: bool,
-        ) -> Result<(), String> {
-            Err("unsupported-platform: AT-SPI typing not supported in headless mode".into())
+        fn inspect(&self,target:Option<&str>)->Result<DesktopSnapshot,String>{if !atspi_runtime_ready(){return Err("desktop-backend-unavailable: python3-pyatspi/AT-SPI session unavailable".into());}atspi_snapshot(target)}
+        fn focus_window(&self,_window_id:Option<u64>,title_or_app:Option<&str>)->Result<WindowInfo,String>{focus_or_close(title_or_app.ok_or_else(||"invalid-args: focus requires title_or_app".to_string())?,"focus")}
+        fn close_window(&self,_window_id:Option<u64>,title_or_app:Option<&str>)->Result<(),String>{focus_or_close(title_or_app.ok_or_else(||"invalid-args: close requires title_or_app".to_string())?,"close").map(|_|())}
+        fn invoke_element(&self,e:&DesktopElement,_action:&str)->Result<(),String>{atspi_action(e,"invoke",None).map(|_|())}
+        fn click_element(&self,e:&DesktopElement)->Result<(),String>{atspi_action(e,"invoke",None).map(|_|())}
+        fn type_element(&self,e:&DesktopElement,text:&str,_clear_first:bool)->Result<(),String>{atspi_action(e,"type",Some(text)).map(|_|())}
+        fn press_key(&self,key:&str,_modifiers:&[&str])->Result<(),String>{
+            const SCRIPT:&str=r#"import os,pyatspi;k=os.environ.get('REFLEX_KEY','');m={'enter':'Return','return':'Return','tab':'Tab','escape':'Escape','esc':'Escape','space':'space','backspace':'BackSpace','delete':'Delete','up':'Up','down':'Down','left':'Left','right':'Right'};sym=m.get(k.lower(),k);pyatspi.Registry.generateKeyboardEvent(0,sym,pyatspi.KEY_SYM)"#;
+            run_python(SCRIPT,&[("REFLEX_KEY",key)]).map(|_|())
         }
-
-        fn press_key(&self, _key: &str, _modifiers: &[&str]) -> Result<(), String> {
-            Err("unsupported-platform: AT-SPI key press not supported in headless mode".into())
-        }
-
-        fn scroll_element(
-            &self,
-            _element: &DesktopElement,
-            _direction: &str,
-            _amount: f64,
-        ) -> Result<(), String> {
-            Err("unsupported-platform: AT-SPI scroll not supported in headless mode".into())
-        }
-
-        fn read_element(&self, _element: &DesktopElement) -> Result<String, String> {
-            Err("desktop-backend-unavailable: AT-SPI semantic read adapter is not linked".into())
-        }
+        fn scroll_element(&self,e:&DesktopElement,direction:&str,_amount:f64)->Result<(),String>{atspi_action(e,if direction.eq_ignore_ascii_case("up"){"scroll-up"}else{"scroll-down"},None).map(|_|())}
+        fn read_element(&self,e:&DesktopElement)->Result<String,String>{let raw=atspi_action(e,"read",None)?;Ok(serde_json::from_str::<String>(&raw).unwrap_or(raw))}
     }
 }
 
