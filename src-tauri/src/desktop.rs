@@ -1194,6 +1194,19 @@ pub fn verify_contract(contract: &VerificationContract) -> Result<(), String> {
     if contract.kind == "none" {
         return Ok(());
     }
+    if !matches!(
+        contract.kind.as_str(),
+        "vision-fallback"
+            | "window-focused"
+            | "window-closed"
+            | "desktop-element-state"
+            | "element-state"
+    ) {
+        return Err(format!(
+            "unverifiable: unsupported verification kind '{}'",
+            contract.kind
+        ));
+    }
 
     let start = Instant::now();
     let timeout = Duration::from_millis(contract.timeout_ms.max(50));

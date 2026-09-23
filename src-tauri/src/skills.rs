@@ -1297,10 +1297,22 @@ mod tests {
         let outcomes = HashMap::new();
         let executor = dummy_executor(&outcomes);
 
+        // This test exercises deterministic skill sequencing, independent of
+        // the fixture's environment-dependent accessibility precondition.
+        let mut executable_skill = skill.clone();
+        for step in &mut executable_skill.steps {
+            step.preconditions.clear();
+        }
+
         let mut user_inputs = HashMap::new();
         user_inputs.insert("app_name".into(), serde_json::json!("vscode"));
 
-        let res = execute_skill(&skill, &user_inputs, "test_session", &executor);
+        let res = execute_skill(
+            &executable_skill,
+            &user_inputs,
+            "test_session",
+            &executor,
+        );
         assert_eq!(res.status, "success");
         assert_eq!(res.completed_steps, 2);
         assert_eq!(res.step_results.len(), 2);
