@@ -819,14 +819,19 @@ fn planner_route(
     text: String,
     allow_remote: bool,
 ) -> Result<serde_json::Value, String> {
-    let persisted_allow_online = app.state::<SettingsState>().snapshot().allow_online_ai;
+    let mut planner_settings = app.state::<SettingsState>().snapshot();
+    if !endpoint.trim().is_empty() {
+        planner_settings.planner_endpoint = endpoint;
+    }
+    if !model.trim().is_empty() {
+        planner_settings.planner_model = model;
+    }
+
     let was_listening = runtime.snapshot().listening;
     let _ = update_runtime(&app, Phase::Routing, None);
     let _ = app.emit("reflexdesk://visual-state", "thinking");
 
-    let secret_bytes = app
-        .state::<SettingsState>()
-        .snapshot()
+    let secret_bytes = planner_settings
         .planner_secret_ref
         .as_ref()
         .and_then(|sref| {
@@ -837,26 +842,34 @@ fn planner_route(
                 .map(std::sync::Arc::new)
         });
 
-    let mut planner_adapter =
-        planner::OpenAiCompatibleLocalPlanner::new(endpoint, model, persisted_allow_online);
-    if let Some(key) = secret_bytes {
-        planner_adapter = planner_adapter.with_api_key(Some(key));
-    }
+    let service = planner::PlannerService::new_with_secret(&planner_settings, secret_bytes);
     let ctx = planner::PlannerContext::default();
     let req = planner::PlannerRequest::new("planner_route", text, allow_remote);
 
     let result = (|| -> Result<serde_json::Value, String> {
-        use planner::LocalPlanner;
-        let envelopes = planner_adapter.plan(&ctx, &req)?;
-        if let Some(env) = envelopes.first() {
+        let envelopes = service.plan(&ctx, &req)?;
+        let actions = envelopes
+            .into_iter()
+            .filter(|env| env.tool != "unknown")
+            .map(|env| {
+                serde_json::json!({
+                    "action": env.tool,
+                    "args": env.args,
+                })
+            })
+            .collect::<Vec<_>>();
+
+        if let Some(first) = actions.first() {
             Ok(serde_json::json!({
-                "action": env.tool,
-                "args": env.args,
+                "action": first.get("action").cloned().unwrap_or(serde_json::Value::String("unknown".into())),
+                "args": first.get("args").cloned().unwrap_or_else(|| serde_json::json!({})),
+                "actions": actions,
             }))
         } else {
             Ok(serde_json::json!({
                 "action": "unknown",
                 "args": {},
+                "actions": [],
             }))
         }
     })();

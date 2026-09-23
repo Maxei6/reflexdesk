@@ -876,10 +876,21 @@ async function dispatchText(text) {
     allowRemote: Boolean(settings.allow_online_ai),
   });
 
-  if (planned && planned.action && planned.action !== "unknown") {
-    const envelope = buildActionEnvelope(planned.action, planned.args || {}, "planner");
+  const plannedActions =
+    planned && Array.isArray(planned.actions) && planned.actions.length
+      ? planned.actions
+      : planned && planned.action && planned.action !== "unknown"
+        ? [{ action: planned.action, args: planned.args || {} }]
+        : [];
+
+  for (const step of plannedActions) {
+    if (!step || !step.action || step.action === "unknown") continue;
+    const envelope = buildActionEnvelope(step.action, step.args || {}, "planner");
     const result = await requestActionWithConfirmation(envelope, cleanText);
     handleActionResult(result);
+    if (!result || ["deny", "denied", "cancelled", "error"].includes(result.status)) {
+      break;
+    }
   }
 }
 async function bootstrap() {
