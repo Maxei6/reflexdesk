@@ -1,8 +1,7 @@
 # Plan 15 — Product localization
 
 **Priority:** P2  
-**Status:** ACCEPTANCE PENDING
-
+**Status:** CODE COMPLETE (ACCEPTANCE PENDING)
 ## Objective
 
 Speech is multilingual already; the product UI and recovery messages should be

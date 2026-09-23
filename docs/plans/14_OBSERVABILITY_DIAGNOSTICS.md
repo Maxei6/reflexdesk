@@ -1,7 +1,7 @@
 # Plan 14 — Privacy-safe observability
 
 **Priority:** P1  
-**Status:** ACCEPTANCE PENDING
+**Status:** CODE COMPLETE (ACCEPTANCE PENDING)
 **Implementation:** Code-complete (Wave 3)
 ## Objective
 
