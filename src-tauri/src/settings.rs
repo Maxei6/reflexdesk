@@ -106,6 +106,12 @@ impl AppSettings {
         if !TTS_PROVIDERS.contains(&self.tts_provider.as_str()) {
             self.tts_provider = "local".into();
         }
+        if self.planner_secret_ref.as_ref().is_some_and(|r| r.provider != "planner") {
+            self.planner_secret_ref = None;
+        }
+        if self.openrouter_secret_ref.as_ref().is_some_and(|r| r.provider != "openrouter") {
+            self.openrouter_secret_ref = None;
+        }
 
         self.openrouter_stt_model =
             crate::openrouter::validate_model_id(&self.openrouter_stt_model)
@@ -242,12 +248,22 @@ mod tests {
             openrouter_stt_model: "evil model/../../etc".into(),
             openrouter_tts_model: "".into(),
             openrouter_tts_voice: "voice\ninjection".into(),
+            planner_secret_ref: Some(crate::secrets::SecretRef {
+                provider: "openrouter".into(),
+                id: "planner-key".into(),
+            }),
+            openrouter_secret_ref: Some(crate::secrets::SecretRef {
+                provider: "planner".into(),
+                id: "planner-key".into(),
+            }),
             ..AppSettings::default()
         };
         settings.normalize();
 
         assert_eq!(settings.stt_provider, "nemotron");
         assert_eq!(settings.tts_provider, "local");
+        assert!(settings.planner_secret_ref.is_none());
+        assert!(settings.openrouter_secret_ref.is_none());
         assert_eq!(
             settings.openrouter_stt_model,
             crate::openrouter::DEFAULT_STT_MODEL

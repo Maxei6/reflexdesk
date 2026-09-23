@@ -355,6 +355,11 @@ fn save_app_settings(
     settings.schema_version = settings::SETTINGS_SCHEMA_VERSION;
     settings.normalize();
     let previous = state.snapshot();
+    // Vault references are owned by connect/disconnect commands, never by a
+    // renderer-supplied settings payload. In particular, a planner key must
+    // not be repointed into the OpenRouter audio adapter.
+    settings.planner_secret_ref = previous.planner_secret_ref.clone();
+    settings.openrouter_secret_ref = previous.openrouter_secret_ref.clone();
     settings::save(&app, &settings)?;
     state.replace(settings.clone())?;
 
