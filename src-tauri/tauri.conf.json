@@ -63,9 +63,10 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "resources": [
-      "resources/**/*"
-    ]
+    "resources": {
+      "resources/": "resources/",
+      "../sidecar/laya_service.py": "sidecar/laya_service.py"
+    }
   },
   "plugins": {
     "updater": {

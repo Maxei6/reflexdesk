@@ -177,7 +177,6 @@
   "advanced": {
     "title": "Avanzate",
     "subtitle": "Modelli, endpoint e diagnostica",
-    "laya_endpoint": "Endpoint Laya",
     "planner_endpoint": "Endpoint Planner",
     "planner_model": "Modello Planner",
     "provider_nemotron": "NVIDIA Nemotron 3.5",

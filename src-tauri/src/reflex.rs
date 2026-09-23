@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     net::TcpListener,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{
         atomic::{AtomicBool, AtomicU32, Ordering},
         Arc, Mutex,
@@ -23,19 +23,6 @@ use std::{
     time::{Duration, Instant},
 };
 use tauri::{AppHandle, Manager};
-
-fn find_executable_on_path(names: &[&str]) -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    for directory in std::env::split_paths(&path) {
-        for name in names {
-            let candidate = directory.join(name);
-            if candidate.is_file() {
-                return Some(candidate);
-            }
-        }
-    }
-    None
-}
 
 // ---------------------------------------------------------------------------
 // Candidate Action & Context definitions
@@ -612,38 +599,20 @@ impl LayaSupervisor {
         Self::default()
     }
 
-    /// Locate local Python interpreter (virtualenv or system).
+    /// The explicit preparation step installs the runtime outside the app bundle.
+    pub fn laya_home() -> Option<PathBuf> {
+        let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })?;
+        Some(PathBuf::from(home).join(".reflexdesk").join("laya"))
+    }
+
     pub fn find_python_interpreter() -> Option<PathBuf> {
-        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let root_dir = manifest_dir.parent().unwrap_or(&manifest_dir);
-
-        let candidates = [
-            root_dir.join(".venv").join("Scripts").join("python.exe"),
-            root_dir.join(".venv").join("bin").join("python"),
-            root_dir.join("venv").join("Scripts").join("python.exe"),
-            root_dir.join("venv").join("bin").join("python"),
-        ];
-
-        for path in candidates {
-            if path.is_file() {
-                return Some(path);
-            }
-        }
-
-        #[cfg(target_os = "windows")]
-        {
-            if let Some(path) = find_executable_on_path(&["python.exe", "python"]) {
-                return Some(path);
-            }
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            if let Some(path) = find_executable_on_path(&["python3", "python"]) {
-                return Some(path);
-            }
-        }
-
-        None
+        let home = Self::laya_home()?;
+        let python = if cfg!(windows) {
+            home.join("venv").join("Scripts").join("python.exe")
+        } else {
+            home.join("venv").join("bin").join("python")
+        };
+        python.is_file().then_some(python)
     }
 
     /// Locate `sidecar/laya_service.py` script.
@@ -729,7 +698,10 @@ impl LayaSupervisor {
             })
             .filter(|response| response.status().is_success())
             .and_then(|response| response.json::<serde_json::Value>().ok())
-            .and_then(|payload| payload.get("ok").and_then(serde_json::Value::as_bool))
+            .map(|payload| {
+                payload.get("ok").and_then(serde_json::Value::as_bool) == Some(true)
+                    && payload.get("provider").and_then(serde_json::Value::as_str) == Some("laya")
+            })
             .unwrap_or(false)
     }
 
@@ -765,9 +737,14 @@ impl LayaSupervisor {
 
         let python = Self::find_python_interpreter().ok_or_else(|| {
             self.starting.store(false, Ordering::SeqCst);
-            "Python runtime not found for Laya sidecar".to_string()
+            "Local Laya runtime not prepared".to_string()
         })?;
 
+        let model_dir = Self::laya_home().unwrap().join("model");
+        if !model_dir.join("model.safetensors").is_file() {
+            self.starting.store(false, Ordering::SeqCst);
+            return Err("Local Laya checkpoint not prepared".into());
+        }
         let script = Self::find_sidecar_script(app).ok_or_else(|| {
             self.starting.store(false, Ordering::SeqCst);
             "sidecar/laya_service.py script not found".to_string()
@@ -791,10 +768,11 @@ impl LayaSupervisor {
                 port_str.clone(),
                 "--token".to_string(),
                 endpoint.token.clone(),
+                "--model-dir".to_string(),
+                model_dir.to_string_lossy().to_string(),
             ])
-            .env("LAYA_HOST", "127.0.0.1")
-            .env("LAYA_PORT", &port_str)
-            .env("LAYA_AUTH_TOKEN", &endpoint.token)
+            .env("HF_HUB_OFFLINE", "1")
+            .env("TRANSFORMERS_OFFLINE", "1")
             .env("PYTHONUNBUFFERED", "1")
             .with_piped_stdio(true);
 
@@ -821,11 +799,14 @@ impl LayaSupervisor {
             .lock()
             .map_err(|_| "Laya process lock poisoned".to_string())? = Some(proc_id);
 
-        // Wait up to 3 seconds for health check to pass
+        // A cold checkpoint load on CPU can take tens of seconds.
         let start_time = Instant::now();
         let mut ready = false;
-        while start_time.elapsed() < Duration::from_secs(3) {
+        while start_time.elapsed() < Duration::from_secs(180) {
             std::thread::sleep(Duration::from_millis(100));
+            if !self.child_running() {
+                break;
+            }
             if self.health() {
                 ready = true;
                 break;
@@ -840,8 +821,13 @@ impl LayaSupervisor {
             Ok(endpoint)
         } else {
             self.consecutive_failures.fetch_add(1, Ordering::SeqCst);
+            let exited = !self.child_running();
             let _ = self.shutdown(supervisor);
-            Err("Laya sidecar health check timed out".to_string())
+            Err(if exited {
+                "Laya sidecar exited before becoming ready".to_string()
+            } else {
+                "Laya sidecar health check timed out".to_string()
+            })
         }
     }
 
@@ -856,16 +842,15 @@ impl LayaSupervisor {
             return false;
         }
 
-        // If enabled and unhealthy, attempt restart up to max attempts
-        if !self.health() {
-            let attempts = self.restart_attempts.load(Ordering::SeqCst);
-            if attempts < 3 {
-                self.restart_attempts.fetch_add(1, Ordering::SeqCst);
-                let _ = self.start(app, supervisor);
-                return self.health();
-            }
+        if self.health() {
+            return true;
         }
-        true
+        let attempts = self.restart_attempts.load(Ordering::SeqCst);
+        if attempts >= 3 {
+            return false;
+        }
+        self.restart_attempts.fetch_add(1, Ordering::SeqCst);
+        self.start(app, supervisor).is_ok()
     }
 }
 
@@ -881,7 +866,7 @@ impl LayaReflex {
         Self {
             endpoint_url: endpoint_url.trim_end_matches('/').to_string(),
             bearer_token,
-            // Calibrated confidence threshold (empirical precision >= 95%)
+            // Provisional cutoff; benchmark the installed checkpoint before widening action scope.
             calibrated_threshold: 0.70,
         }
     }
@@ -915,7 +900,10 @@ impl ReflexProvider for LayaReflex {
         req.and_then(|r| r.send().ok())
             .filter(|res| res.status().is_success())
             .and_then(|res| res.json::<serde_json::Value>().ok())
-            .and_then(|val| val.get("ok").and_then(serde_json::Value::as_bool))
+            .map(|val| {
+                val.get("ok").and_then(serde_json::Value::as_bool) == Some(true)
+                    && val.get("provider").and_then(serde_json::Value::as_str) == Some("laya")
+            })
             .unwrap_or(false)
     }
 
@@ -948,25 +936,11 @@ impl ReflexProvider for LayaReflex {
 
         let payload: serde_json::Value = response.json().ok()?;
 
-        // Parse response from Laya sidecar
-        // Format 1: {"intent": {"choice": "app.open", "confidence": 0.95}}
-        // Format 2: {"choice": "app.open", "confidence": 0.95}
-        let (choice, confidence) = if let Some(intent) = payload.get("intent") {
-            let c = intent.get("choice").and_then(serde_json::Value::as_str)?;
-            let conf = intent
-                .get("confidence")
-                .and_then(serde_json::Value::as_f64)
-                .unwrap_or(0.0) as f32;
-            (c, conf)
-        } else if let Some(c) = payload.get("choice").and_then(serde_json::Value::as_str) {
-            let conf = payload
-                .get("confidence")
-                .and_then(serde_json::Value::as_f64)
-                .unwrap_or(0.0) as f32;
-            (c, conf)
-        } else {
-            return None;
-        };
+        let intent = payload.get("answers")?.get("intent")?;
+        let choice = intent.get("choice").and_then(serde_json::Value::as_str)?;
+        let confidence = intent
+            .get("confidence")
+            .and_then(serde_json::Value::as_f64)? as f32;
 
         if choice == "unknown" || confidence < self.calibrated_threshold {
             return None;
@@ -999,6 +973,8 @@ pub struct ReflexEngine {
     deterministic: Arc<DeterministicReflex>,
     compact: Arc<CompactReflex>,
     supervisor: Arc<LayaSupervisor>,
+    laya_qualified: AtomicBool,
+    laya_benchmark: Mutex<Option<BenchmarkReport>>,
 }
 
 impl ReflexEngine {
@@ -1008,6 +984,8 @@ impl ReflexEngine {
             deterministic: Arc::new(DeterministicReflex::new()),
             compact: Arc::new(CompactReflex::new()),
             supervisor: Arc::new(LayaSupervisor::new()),
+            laya_qualified: AtomicBool::new(false),
+            laya_benchmark: Mutex::new(None),
         }
     }
 
@@ -1017,6 +995,67 @@ impl ReflexEngine {
 
     pub fn cache(&self) -> &Arc<ReflexCache> {
         &self.cache
+    }
+
+    pub fn laya_benchmark(&self) -> Option<BenchmarkReport> {
+        self.laya_benchmark
+            .lock()
+            .ok()
+            .and_then(|report| report.clone())
+    }
+
+    /// Never prefer an unmeasured checkpoint over deterministic routing.
+    pub fn activate_local_laya(
+        &self,
+        app: &AppHandle,
+        supervisor: &ProcessSupervisor,
+    ) -> Result<bool, String> {
+        let endpoint = self.supervisor.start(app, supervisor)?;
+        let client = LayaReflex::new(
+            format!("http://127.0.0.1:{}", endpoint.port),
+            Some(endpoint.token),
+        );
+        let corpus = include_str!("../../tests/fixtures/reflex/corpus.jsonl");
+        let report = run_corpus_benchmark(corpus, Some(&client));
+        let qualified = report.keep_laya_recommendation;
+        if let Ok(mut latest) = self.laya_benchmark.lock() {
+            *latest = Some(report);
+        }
+        self.laya_qualified.store(qualified, Ordering::SeqCst);
+        if !qualified {
+            self.supervisor.shutdown(supervisor)?;
+        }
+        Ok(qualified)
+    }
+
+    fn search_from_intent(
+        &self,
+        ctx: &ReflexContext,
+        action: String,
+        confidence: f32,
+        provider: &'static str,
+    ) -> Option<ReflexDecision> {
+        // Classifiers produce intents, not targets. A search can safely use
+        // the utterance; all other actions need deterministic/planner arguments.
+        if action != "browser.search" {
+            return None;
+        }
+        let args = serde_json::json!({ "query": ctx.text });
+        self.cache.insert(
+            &ctx.normalized_text,
+            &ctx.semantic_state_hash,
+            &action,
+            confidence,
+            provider,
+            args.clone(),
+        );
+        Some(ReflexDecision {
+            action: Some(action),
+            args,
+            confidence,
+            provider: provider.into(),
+            from_cache: false,
+        })
     }
 
     /// Route a command through the multi-tier pipeline:
@@ -1058,7 +1097,9 @@ impl ReflexEngine {
         }
 
         // 3. Tier-1: Laya (if preferred or enabled)
-        if provider_pref == "laya" || provider_pref == "auto" {
+        if self.laya_qualified.load(Ordering::SeqCst)
+            && (provider_pref == "laya" || provider_pref == "auto")
+        {
             if let Some(endpoint) = self.supervisor.endpoint_snapshot() {
                 let laya = LayaReflex::new(
                     format!("http://127.0.0.1:{}", endpoint.port),
@@ -1066,22 +1107,9 @@ impl ReflexEngine {
                 );
                 if laya.health() {
                     if let Some((action, conf)) = laya.route(&candidates, ctx) {
-                        let args = serde_json::json!({});
-                        self.cache.insert(
-                            &ctx.normalized_text,
-                            &ctx.semantic_state_hash,
-                            &action,
-                            conf,
-                            "laya",
-                            args.clone(),
-                        );
-                        return ReflexDecision {
-                            action: Some(action),
-                            args,
-                            confidence: conf,
-                            provider: "laya".into(),
-                            from_cache: false,
-                        };
+                        if let Some(decision) = self.search_from_intent(ctx, action, conf, "laya") {
+                            return decision;
+                        }
                     }
                 }
             }
@@ -1089,22 +1117,9 @@ impl ReflexEngine {
 
         // 4. Tier-2: Compact Heuristic Classifier
         if let Some((action, conf)) = self.compact.route(&candidates, ctx) {
-            let args = serde_json::json!({});
-            self.cache.insert(
-                &ctx.normalized_text,
-                &ctx.semantic_state_hash,
-                &action,
-                conf,
-                "compact",
-                args.clone(),
-            );
-            return ReflexDecision {
-                action: Some(action),
-                args,
-                confidence: conf,
-                provider: "compact".into(),
-                from_cache: false,
-            };
+            if let Some(decision) = self.search_from_intent(ctx, action, conf, "compact") {
+                return decision;
+            }
         }
 
         // 5. Unresolved
@@ -1126,7 +1141,7 @@ impl ReflexEngine {
 pub struct LanguageMetrics {
     pub total: usize,
     pub deterministic_correct: usize,
-    pub laya_or_compact_correct: usize,
+    pub laya_correct: usize,
     pub accuracy: f32,
 }
 
@@ -1134,16 +1149,17 @@ pub struct LanguageMetrics {
 pub struct BenchmarkReport {
     pub total_samples: usize,
     pub deterministic_accuracy: f32,
+    pub laya_measured: bool,
     pub compact_accuracy: f32,
-    pub laya_accuracy: f32,
+    pub laya_accuracy: Option<f32>,
     pub ambiguity_samples: usize,
     pub deterministic_ambiguity_resolved: usize,
-    pub laya_or_compact_ambiguity_resolved: usize,
-    pub ambiguity_gain_pct: f32,
+    pub laya_ambiguity_resolved: usize,
+    pub ambiguity_gain_pct: Option<f32>,
     pub deterministic_p50_latency_us: u64,
     pub deterministic_p95_latency_us: u64,
-    pub laya_p50_latency_ms: f32,
-    pub laya_p95_latency_ms: f32,
+    pub laya_p50_latency_ms: Option<f32>,
+    pub laya_p95_latency_ms: Option<f32>,
     pub languages: HashMap<String, LanguageMetrics>,
     pub keep_laya_recommendation: bool,
     pub decision_reason: String,
@@ -1176,6 +1192,7 @@ pub fn run_corpus_benchmark(
 
     let deterministic = DeterministicReflex::new();
     let compact = CompactReflex::new();
+    let laya_client = laya_client.filter(|laya| laya.health());
     let candidates = standard_candidates();
 
     let mut deterministic_correct = 0;
@@ -1218,20 +1235,18 @@ pub fn run_corpus_benchmark(
             compact_correct += 1;
         }
 
-        // Laya timing & result (or compact fallback if laya client absent)
-        let laya_match = if let Some(laya) = laya_client {
-            let t1 = Instant::now();
-            let l_res = laya.route(&candidates, &ctx);
-            let l_time = t1.elapsed().as_micros() as f32 / 1000.0;
-            laya_latencies.push(l_time);
-            match &l_res {
-                Some((act, _)) => act == &item.expected,
-                None => item.expected == "unknown",
-            }
-        } else {
-            laya_latencies.push(0.05);
-            comp_match
-        };
+        // An unavailable model is not a measured compact-model result.
+        let laya_match = laya_client
+            .map(|laya| {
+                let t1 = Instant::now();
+                let result = laya.route(&candidates, &ctx);
+                laya_latencies.push(t1.elapsed().as_secs_f32() * 1000.0);
+                match result {
+                    Some((action, _)) => action == item.expected,
+                    None => item.expected == "unknown",
+                }
+            })
+            .unwrap_or(false);
 
         if laya_match {
             laya_correct += 1;
@@ -1281,11 +1296,14 @@ pub fn run_corpus_benchmark(
         .copied()
         .unwrap_or(0.0);
 
-    let ambig_gain = if ambig_total > 0 {
-        ((laya_ambig_resolved as f32 - deterministic_ambig_resolved as f32) / ambig_total as f32)
-            * 100.0
+    let ambig_gain = if laya_client.is_some() && ambig_total > 0 {
+        Some(
+            ((laya_ambig_resolved as f32 - deterministic_ambig_resolved as f32)
+                / ambig_total as f32)
+                * 100.0,
+        )
     } else {
-        0.0
+        None
     };
 
     let mut languages = HashMap::new();
@@ -1295,7 +1313,7 @@ pub fn run_corpus_benchmark(
             LanguageMetrics {
                 total: l_total,
                 deterministic_correct: l_det,
-                laya_or_compact_correct: l_laya,
+                laya_correct: l_laya,
                 accuracy: (l_laya as f32) / (l_total as f32).max(1.0),
             },
         );
@@ -1304,31 +1322,31 @@ pub fn run_corpus_benchmark(
     // Keep-Laya Decision Rule:
     // Keep Laya only if it materially improves ambiguity resolution (>= 15% gain on ambiguous queries)
     // without harming latency/reliability (p95 < 250ms).
-    let is_ambiguity_win_material = ambig_gain >= 15.0;
-    let latency_acceptable = laya_p95 <= 250.0;
-    let keep_laya = is_ambiguity_win_material && latency_acceptable;
-
-    let reason = if keep_laya {
-        format!("Laya resolved +{ambig_gain:.1}% ambiguous queries with acceptable p95 latency ({laya_p95:.1}ms). Keep Laya as Tier-1 fallback.")
-    } else if !is_ambiguity_win_material {
-        format!("Ambiguity gain ({ambig_gain:.1}%) below 15% threshold. Defaulting to deterministic reflex.")
-    } else {
-        format!("Laya p95 latency ({laya_p95:.1}ms) exceeds 250ms budget. Defaulting to deterministic reflex.")
+    let keep_laya = matches!(ambig_gain, Some(gain) if gain >= 15.0) && laya_p95 <= 250.0;
+    let reason = match ambig_gain {
+        None => "Laya not measured; no checkpoint was available".to_string(),
+        Some(gain) if keep_laya => format!(
+            "Laya resolved +{gain:.1}% ambiguous queries at p95 {laya_p95:.1}ms"
+        ),
+        Some(gain) => format!(
+            "Laya did not meet the 15% ambiguity gain and 250ms p95 gate ({gain:.1}%, {laya_p95:.1}ms)"
+        ),
     };
 
     BenchmarkReport {
         total_samples: items.len(),
         deterministic_accuracy: (deterministic_correct as f32) / (total as f32),
         compact_accuracy: (compact_correct as f32) / (total as f32),
-        laya_accuracy: (laya_correct as f32) / (total as f32),
+        laya_measured: laya_client.is_some(),
+        laya_accuracy: laya_client.map(|_| (laya_correct as f32) / (total as f32)),
         ambiguity_samples: ambig_total,
         deterministic_ambiguity_resolved: deterministic_ambig_resolved,
-        laya_or_compact_ambiguity_resolved: laya_ambig_resolved,
+        laya_ambiguity_resolved: laya_ambig_resolved,
         ambiguity_gain_pct: ambig_gain,
         deterministic_p50_latency_us: det_p50,
         deterministic_p95_latency_us: det_p95,
-        laya_p50_latency_ms: laya_p50,
-        laya_p95_latency_ms: laya_p95,
+        laya_p50_latency_ms: laya_client.map(|_| laya_p50),
+        laya_p95_latency_ms: laya_client.map(|_| laya_p95),
         languages,
         keep_laya_recommendation: keep_laya,
         decision_reason: reason,
@@ -1425,6 +1443,19 @@ mod tests {
     }
 
     #[test]
+    fn classifier_intents_cannot_dispatch_without_target_arguments() {
+        let engine = ReflexEngine::new();
+        let coding = ReflexContext::new("start coding on the auth service", "s", None, None);
+        let unresolved = engine.route_command(&coding, "deterministic");
+        assert_eq!(unresolved.action, None);
+
+        let search = ReflexContext::new("look up how to configure tauri windows", "s", None, None);
+        let decision = engine.route_command(&search, "deterministic");
+        assert_eq!(decision.action.as_deref(), Some("browser.search"));
+        assert_eq!(decision.args["query"], search.text);
+    }
+
+    #[test]
     fn test_reflex_cache_insertion_and_expiry() {
         let cache = ReflexCache::new(Duration::from_millis(50));
         cache.insert(
@@ -1449,19 +1480,16 @@ mod tests {
     }
 
     #[test]
-    fn test_benchmark_runner_on_corpus() {
+    fn benchmark_does_not_label_compact_as_laya_when_model_is_absent() {
         let fixture = include_str!("../../tests/fixtures/reflex/corpus.jsonl");
         let report = run_corpus_benchmark(fixture, None);
 
-        assert!(report.total_samples >= 40);
-        assert!(report.deterministic_accuracy >= 0.60);
-        assert!(report.compact_accuracy >= 0.70);
-        assert!(report.ambiguity_gain_pct >= 15.0);
-        assert!(report.languages.contains_key("en"));
-        assert!(report.languages.contains_key("it"));
-        assert!(report.languages.contains_key("es"));
-        assert!(report.languages.contains_key("fr"));
-        assert!(report.languages.contains_key("de"));
+        assert!(report.total_samples > 0);
+        assert!(!report.laya_measured);
+        assert_eq!(report.laya_accuracy, None);
+        assert_eq!(report.laya_p95_latency_ms, None);
+        assert_eq!(report.ambiguity_gain_pct, None);
+        assert!(!report.keep_laya_recommendation);
     }
 
     #[test]

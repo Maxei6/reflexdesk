@@ -1,195 +1,111 @@
-"""Local Laya adapter for ReflexDesk.
+"""Authenticated loopback adapter for an explicitly installed local Laya checkpoint.
 
-Supports:
-  - Supervised execution with ephemeral bearer token (--token / LAYA_AUTH_TOKEN)
-  - Custom local port (--port / LAYA_PORT)
-  - Authenticated /health and /route endpoints
-  - Real Laya model if installed, with a clean local heuristic fallback for offline/embedded testing
+No model downloads occur in this process. Run scripts/prepare_laya.py once while
+online; voice routing itself remains entirely offline.
 """
 from __future__ import annotations
 
 import argparse
 import json
 import os
-import re
-import sys
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-
-HOST = "127.0.0.1"
-PORT = 8787
-TOKEN = None
-AGENT = None
-
-
-class FallbackLayaAgent:
-    """Local fallback intent classifier for offline operation when laya package is not installed."""
-
-    def predict(self, input_data: dict, questions: dict) -> dict:
-        command = str(input_data.get("command", "")).strip()
-        lower = command.lower()
-        context = input_data.get("context", {})
-
-        # Default classification
-        intent = "unknown"
-        confidence = 0.25
-        needs_confirm = 0.05
-
-        # Heuristic rules matching the questions criteria
-        if re.search(r"^(?:hello|hey)\s+reflex(?:desk)?", lower):
-            intent = "control"
-            confidence = 0.99
-        elif re.search(r"^(?:stop|cancel|sleep|go to sleep)", lower):
-            intent = "control"
-            confidence = 0.98
-        elif re.search(r"^(?:open|launch|start)\s+(?:spotify|chrome|google chrome|firefox|vscode|vs code|terminal|notepad)", lower):
-            intent = "app.open"
-            confidence = 0.95
-            needs_confirm = 0.1
-        elif re.search(r"^(?:open|go to)\s+https?://", lower):
-            intent = "browser.open"
-            confidence = 0.98
-            needs_confirm = 0.2
-        elif re.search(r"^(?:search(?: the web)? for|google)\s+", lower):
-            intent = "browser.search"
-            confidence = 0.96
-            needs_confirm = 0.05
-        elif re.search(r"^(?:ask|tell|run)\s+(?:opencode|kilo|codex|claude)", lower):
-            intent = "harness.start"
-            confidence = 0.92
-            needs_confirm = 0.85
-        elif re.search(r"(?:open|launch|run)\s+\w+", lower):
-            # Ambiguous open command
-            intent = "app.open"
-            confidence = 0.70
-            needs_confirm = 0.4
-        elif re.search(r"(?:look up|find|search)\s+", lower):
-            intent = "browser.search"
-            confidence = 0.75
-            needs_confirm = 0.1
-        elif re.search(r"(?:code|refactor|fix bug|implement)\s+", lower):
-            intent = "harness.start"
-            confidence = 0.72
-            needs_confirm = 0.80
-
-        # Construct question response structure
-        return {
-            "intent": {
-                "choice": intent,
-                "probabilities": {
-                    intent: confidence,
-                    "unknown": round(1.0 - confidence, 4),
-                },
-                "confidence": confidence,
-            },
-            "needs_confirmation": {
-                "bool": needs_confirm,
-            },
-            "choice": intent,
-            "confidence": confidence,
-        }
-
-
-def get_agent():
-    global AGENT
-    if AGENT is None:
-        try:
-            import laya  # type: ignore
-            AGENT = laya.load("convaiinnovations/laya")
-        except Exception:
-            # Clean fallback if laya library is absent or fails to load weights
-            AGENT = FallbackLayaAgent()
-    return AGENT
-
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 
 QUESTIONS = {
     "intent": {
         "type": "choice",
-        "instructions": "Select the safest best-matching desktop action for this command.",
+        "instructions": "Which desktop task does the user request? Choose unknown if no task is clear.",
         "criteria": {
-            "app.open": "Launch or focus an installed application",
-            "browser.open": "Open a specific URL",
-            "browser.search": "Search the web for a query",
-            "harness.start": "Start or delegate work to an AI coding/agent harness",
-            "unknown": "No known safe action matches",
+            "app.open": "Launch or focus an application",
+            "browser.open": "Open a URL in a browser",
+            "browser.search": "Search the web for a topic",
+            "harness.start": "Delegate a coding task to an AI harness",
+            "unknown": "None of these actions is clearly requested",
         },
     },
-    "needs_confirmation": {
-        "type": "bool",
-        "instructions": "Would executing this command create a destructive, sensitive, or irreversible effect?",
-    },
 }
+AGENT = None
+TOKEN = ""
 
 
 class Handler(BaseHTTPRequestHandler):
-    def _json(self, status: int, payload: dict):
-        data = json.dumps(payload).encode()
+    def respond(self, status: int, payload: dict):
+        data = json.dumps(payload).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
 
-    def check_auth(self) -> bool:
-        if not TOKEN:
-            return True
-        auth_header = self.headers.get("Authorization", "")
-        expected = f"Bearer {TOKEN}"
-        if auth_header != expected:
-            self._json(401, {"error": "unauthorized", "message": "invalid or missing bearer token"})
+    def authorized(self) -> bool:
+        if self.headers.get("Authorization") != f"Bearer {TOKEN}":
+            self.respond(401, {"error": "unauthorized"})
             return False
         return True
 
     def do_GET(self):
-        if not self.check_auth():
+        if not self.authorized():
             return
         if self.path == "/health":
-            return self._json(200, {
-                "ok": True,
-                "provider": "laya",
-                "model": "convaiinnovations/laya",
-                "version": "0.1.0",
-                "authenticated": bool(TOKEN),
-            })
-        self._json(404, {"error": "not found"})
+            self.respond(200, {"ok": AGENT is not None, "provider": "laya", "model": "multilingual"})
+        else:
+            self.respond(404, {"error": "not found"})
 
     def do_POST(self):
-        if not self.check_auth():
+        if not self.authorized():
             return
         if self.path != "/route":
-            return self._json(404, {"error": "not found"})
+            self.respond(404, {"error": "not found"})
+            return
         try:
             length = int(self.headers.get("Content-Length", "0"))
-            body = json.loads(self.rfile.read(length) or b"{}")
-            command = str(body.get("text", ""))
-            context = body.get("context", {})
-            result = get_agent().predict({"command": command, "context": context}, QUESTIONS)
-            self._json(200, result)
-        except Exception as exc:
-            self._json(500, {"error": str(exc)})
+            if length <= 0 or length > 65536:
+                self.respond(413, {"error": "invalid request length"})
+                return
+            body = json.loads(self.rfile.read(length))
+            text = body.get("text")
+            if not isinstance(text, str) or not text.strip():
+                self.respond(400, {"error": "text required"})
+                return
+            result = AGENT.predict(text.strip(), QUESTIONS)
+            self.respond(200, result)
+        except (ValueError, TypeError, KeyError) as exc:
+            self.respond(400, {"error": str(exc)})
+        except Exception:
+            self.respond(500, {"error": "local inference failed"})
 
     def log_message(self, *_):
         return
 
 
-def parse_args():
-    parser = argparse.ArgumentParser(description="ReflexDesk Laya Sidecar Service")
-    parser.add_argument("--host", default=os.environ.get("LAYA_HOST", HOST), help="Bind host (default 127.0.0.1)")
-    parser.add_argument("--port", type=int, default=int(os.environ.get("LAYA_PORT", PORT)), help="Bind port (default 8787)")
-    parser.add_argument("--token", default=os.environ.get("LAYA_AUTH_TOKEN", os.environ.get("REFLEXDESK_LAYA_TOKEN")), help="Bearer token for authentication")
-    return parser.parse_args()
+def main():
+    parser = argparse.ArgumentParser(description="Offline ReflexDesk Laya sidecar")
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=8787)
+    parser.add_argument("--token", required=True)
+    parser.add_argument("--model-dir", required=True)
+    args = parser.parse_args()
+    if args.host != "127.0.0.1" or not args.token:
+        parser.error("loopback host and bearer token required")
+    model_dir = Path(args.model_dir)
+    if not (model_dir / "model.safetensors").is_file():
+        parser.error("local Laya checkpoint missing; run scripts/prepare_laya.py")
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    os.environ["TRANSFORMERS_OFFLINE"] = "1"
+    import laya
 
-
-if __name__ == "__main__":
-    args = parse_args()
-    HOST = args.host
-    PORT = args.port
+    global AGENT, TOKEN
+    AGENT = laya.load(str(model_dir.resolve()))
     TOKEN = args.token
-    auth_status = "enabled" if TOKEN else "disabled"
-    print(f"ReflexDesk Laya sidecar listening on http://{HOST}:{PORT} (auth: {auth_status})")
-    server = ThreadingHTTPServer((HOST, PORT), Handler)
+    server = HTTPServer((args.host, args.port), Handler)
+    print("ReflexDesk local Laya ready", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
         server.server_close()
+
+
+if __name__ == "__main__":
+    main()

@@ -104,10 +104,10 @@ function syncLocalVoiceSettings() {
     uiLocale: settings.ui_locale || "system",
     overlayEnabled: settings.overlay_enabled,
     plannerMode: settings.allow_online_ai ? "hybrid" : "local",
-    layaEndpoint: settings.laya_endpoint,
     plannerEndpoint: settings.planner_endpoint,
     plannerModel: settings.planner_model,
   });
+  delete next.layaEndpoint;
   localStorage.setItem(LOCAL_KEY, JSON.stringify(next));
 }
 
@@ -133,7 +133,6 @@ function renderSettings() {
   if ($("openRouterSttModel")) $("openRouterSttModel").value = settings.openrouter_stt_model || "";
   if ($("openRouterTtsModel")) $("openRouterTtsModel").value = settings.openrouter_tts_model || "";
   if ($("openRouterTtsVoice")) $("openRouterTtsVoice").value = settings.openrouter_tts_voice || "";
-  $("layaEndpoint").value = settings.laya_endpoint;
   $("plannerEndpoint").value = settings.planner_endpoint;
   $("plannerModel").value = settings.planner_model;
 
@@ -502,7 +501,6 @@ async function saveDashboardSettings() {
   if ($("openRouterSttModel")) settings.openrouter_stt_model = $("openRouterSttModel").value.trim();
   if ($("openRouterTtsModel")) settings.openrouter_tts_model = $("openRouterTtsModel").value.trim();
   if ($("openRouterTtsVoice")) settings.openrouter_tts_voice = $("openRouterTtsVoice").value.trim();
-  settings.laya_endpoint = $("layaEndpoint").value.trim();
   settings.planner_endpoint = $("plannerEndpoint").value.trim();
   settings.planner_model = $("plannerModel").value.trim() || "auto";
 
@@ -1064,22 +1062,6 @@ async function dispatchText(text) {
 
   if (settings && settings.stt_provider === "manual") return;
 
-  if (settings && settings.laya_endpoint) {
-    try {
-      const layaResult = await invoke("laya_route", {
-        endpoint: settings.laya_endpoint,
-        text: cleanText,
-      });
-      const choice = (layaResult && (layaResult.choice || (layaResult.intent && layaResult.intent.choice))) || "";
-      const conf = (layaResult && (typeof layaResult.confidence === "number" ? layaResult.confidence : (layaResult.intent && layaResult.intent.confidence))) || 0;
-      if (choice && choice !== "unknown" && conf >= 0.70) {
-        const envelope = buildActionEnvelope(choice, {}, "reflex");
-        const result = await requestActionWithConfirmation(envelope, cleanText);
-        handleActionResult(result);
-        return;
-      }
-    } catch {}
-  }
 
   const planned = await invoke("planner_route", {
     endpoint: settings.planner_endpoint,
@@ -1149,7 +1131,6 @@ for (const id of [
   "openRouterSttModel",
   "openRouterTtsModel",
   "openRouterTtsVoice",
-  "layaEndpoint",
   "plannerEndpoint",
   "plannerModel",
 ]) {

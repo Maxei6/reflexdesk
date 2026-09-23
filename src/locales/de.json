@@ -138,7 +138,6 @@
     "title": "Erweitert",
     "subtitle": "Modelle, Endpunkte und Diagnose",
     "speech_engine": "Sprach-Engine",
-    "laya_endpoint": "Laya-Endpunkt",
     "planner_endpoint": "Planner-Endpunkt",
     "planner_model": "Planner-Modell",
     "provider_nemotron": "NVIDIA Nemotron 3.5",

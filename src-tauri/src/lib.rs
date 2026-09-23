@@ -770,60 +770,6 @@ fn get_browser_pairing_secret() -> String {
     browser::get_pairing_secret()
 }
 
-#[tauri::command]
-fn laya_route(
-    app: AppHandle,
-    runtime: State<'_, RuntimeState>,
-    endpoint: String,
-    text: String,
-) -> Result<serde_json::Value, String> {
-    if !security::is_loopback_url(&endpoint) {
-        return Err("laya endpoint must be a local loopback URL".into());
-    }
-
-    let was_listening = runtime.snapshot().listening;
-    let _ = update_runtime(&app, Phase::Routing, None);
-    let _ = app.emit("reflexdesk://visual-state", "thinking");
-
-    let url = format!("{}/route", endpoint.trim_end_matches('/'));
-    let mut client_builder =
-        reqwest::blocking::Client::builder().timeout(Duration::from_millis(500));
-    let client = client_builder.build().map_err(|e| e.to_string())?;
-
-    let mut req = client.post(&url).json(&serde_json::json!({
-        "text": text,
-        "context": { "source": "reflexdesk" }
-    }));
-
-    // Inject ephemeral bearer token if supervised Laya endpoint matches
-    if let Some(engine) = app.try_state::<reflex::ReflexEngine>() {
-        if let Some(ep) = engine.supervisor().endpoint_snapshot() {
-            if endpoint.contains(&format!(":{}", ep.port)) {
-                req = req.header("Authorization", format!("Bearer {}", ep.token));
-            }
-        }
-    }
-
-    let result = req
-        .send()
-        .map_err(|e| redaction::redact_error(&e.to_string()))
-        .and_then(|response| {
-            response
-                .json::<serde_json::Value>()
-                .map_err(|e| redaction::redact_error(&e.to_string()))
-        });
-
-    let _ = update_runtime(
-        &app,
-        if was_listening {
-            Phase::Listening
-        } else {
-            Phase::Ready
-        },
-        None,
-    );
-    result
-}
 
 #[tauri::command]
 fn reflex_route(
@@ -836,7 +782,7 @@ fn reflex_route(
     let session = session_id.unwrap_or_else(|| "reflex_session".into());
     let ctx = reflex::ReflexContext::new(&text, &session, None, Some(&settings.language));
     if let Some(engine) = app.try_state::<reflex::ReflexEngine>() {
-        Ok(engine.route_command(&ctx, &settings.stt_provider))
+        Ok(engine.route_command(&ctx, "auto"))
     } else {
         let engine = reflex::ReflexEngine::new();
         Ok(engine.route_command(&ctx, "deterministic"))
@@ -853,6 +799,7 @@ fn get_reflex_health(app: AppHandle) -> serde_json::Value {
             "compact_health": true,
             "laya_health": laya_health,
             "laya_running": laya_running,
+            "laya_benchmark": engine.laya_benchmark(),
             "ready": true,
         })
     } else {
@@ -861,6 +808,7 @@ fn get_reflex_health(app: AppHandle) -> serde_json::Value {
             "compact_health": true,
             "laya_health": false,
             "laya_running": false,
+            "laya_benchmark": null,
             "ready": true,
         })
     }
@@ -1546,6 +1494,26 @@ pub fn run() {
                 let _ = update_runtime(app.handle(), Phase::SetupRequired, None);
                 show_main(app.handle());
             }
+            if loaded_settings.setup_complete
+                && reflex::LayaSupervisor::find_python_interpreter().is_some()
+                && reflex::LayaSupervisor::laya_home()
+                    .is_some_and(|home| home.join("model").join("model.safetensors").is_file())
+            {
+                let handle = app.handle().clone();
+                thread::spawn(move || {
+                    let engine = handle.state::<reflex::ReflexEngine>();
+                    let supervisor = handle.state::<ProcessSupervisor>();
+                    if engine.activate_local_laya(&handle, &supervisor).unwrap_or(false) {
+                        loop {
+                            thread::sleep(Duration::from_secs(8));
+                            if handle.state::<RuntimeState>().snapshot().phase == Phase::ShuttingDown {
+                                break;
+                            }
+                            engine.supervisor().tick_watchdog(&handle, &supervisor, true);
+                        }
+                    }
+                });
+            }
 
             start_watchdog(app.handle().clone());
             Ok(())
@@ -1570,7 +1538,6 @@ pub fn run() {
             get_desktop_health,
             get_browser_status,
             get_browser_pairing_secret,
-            laya_route,
             reflex_route,
             get_reflex_health,
             planner_route,

@@ -138,7 +138,6 @@
     "title": "Avanzado",
     "subtitle": "Modelos, endpoints y diagnóstico",
     "speech_engine": "Motor de voz",
-    "laya_endpoint": "Endpoint de Laya",
     "planner_endpoint": "Endpoint de Planner",
     "planner_model": "Modelo de Planner",
     "provider_nemotron": "NVIDIA Nemotron 3.5",
