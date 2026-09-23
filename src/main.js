@@ -935,11 +935,6 @@ for (const id of [
   if ($(id)) $(id).addEventListener("change", saveDashboardSettings);
 }
 
-$("resetSetup").addEventListener("click", async function () {
-  if (!window.confirm(t("settings.reset_confirm"))) return;
-  settings = await invoke("reset_setup");
-  showOnboarding();
-});
 
 
 
