@@ -38,3 +38,6 @@ confirmations retain equivalent meaning across supported locales.
 - **Formatters:** Added `formatNumber`, `formatDate`, `formatPlural`, and `{count, plural}` token interpolation using standard `Intl.PluralRules`, `Intl.NumberFormat`, and `Intl.DateTimeFormat`.
 - **Localized Errors:** `localizeError` maps error codes (`unknown-tool`, `negation-detected`, `invalid-args`, `auth-invalid`, `mic-permission-denied`, `stt-unavailable`, `model-download-failed`, `action-cancelled`, `policy-denied`) to localized recovery text.
 - **Safety & Confirmation Translation QA:** Policy gate modal strings (`policy.modal.title`, `policy.modal.kicker`, `policy.modal.approve`, `policy.modal.deny`, risk classes) and confirmation prompts (`settings.reset_confirm`, `agents.confirm_start`) verified in automated test suite `tests/localization.test.mjs` across all locales; approve/deny consequences are identical and policy args summaries stay un-redacted/verbatim in every locale.
+- **Voice additions:** English and Italian catalogs cover the second spoken
+  language, offline spoken feedback and opt-in OpenRouter controls. Other
+  supported locales use the established English fallback until translated.

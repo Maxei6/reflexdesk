@@ -1493,6 +1493,12 @@ pub fn run() {
                 .unwrap_or_else(|_| std::path::PathBuf::from("."));
             let updater_service = updater::UpdaterService::new(app_data_dir);
             app.manage(updater_service);
+            // Configured webviews can load scripts before setup has registered
+            // command state. Create them only after every managed dependency is
+            // ready, so first-run and background startups are deterministic.
+            for config in &app.config().app.windows {
+                tauri::WebviewWindowBuilder::from_config(app.handle(), config)?.build()?;
+            }
 
             tray::setup(app)?;
 

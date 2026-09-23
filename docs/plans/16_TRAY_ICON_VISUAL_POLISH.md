@@ -68,3 +68,7 @@ positioned/readable across DPI, taskbar/dock and monitor configurations.
   - Global hotkey (`Ctrl+Shift+Space` / `Cmd+Shift+Space`) preserves deterministic kill switch via `policy::cancel_now("hotkey-cancelled")` and `set_listening_internal(app, false)`.
 - **Test Coverage**:
   - Node suite in `tests/tray-mapping.test.mjs` verifies DPI scaling (100%, 125%, 150%, 200%), multi-monitor negative coordinates, dock insets, clamping, fallback, and asset header validation.
+- **Desktop shell preview:** The dashboard is one scrollable Windows-style
+  work surface with grouped voice, app, privacy, provider, agents and advanced
+  controls. The installer/executable icon was verified visible in a Windows
+  preview build. Final post-change native UI acceptance remains pending.

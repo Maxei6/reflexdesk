@@ -70,3 +70,12 @@ all provider integrations retrieve secrets only through SecretStore.
 - The native OS-vault lifecycle test is intentionally ignored in the headless
   unit suite and remains an acceptance requirement in interactive platform CI.
 - Node tests verify settings/localStorage credential exclusion and migration guards.
+
+### OpenRouter audio credential (preview acceptance pending)
+- `openrouter_secret_ref` is separate from `planner_secret_ref`; both hold only
+  opaque OS-vault references. Provider commands accept only `planner` or
+  `openrouter`, and the OpenRouter connection probe uses a fixed OpenRouter URL.
+- STT/TTS request adapters retrieve the key in Rust per call; renderer state and
+  settings do not contain the key. Online permission and explicit provider
+  selection gate audio upload. A real authenticated, billed provider call has
+  not been exercised without a user-supplied key.

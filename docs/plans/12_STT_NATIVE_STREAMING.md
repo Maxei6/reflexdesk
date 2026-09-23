@@ -87,6 +87,15 @@ No public/local network listener is preferred.
 - **Status:** Complete.
 - Full fallback retained: if `stt_stream_chunk` encounters an unlinked native runtime or streaming error, `finalizeNemotronUtterance` in `src/overlay.js` seamlessly falls back to `stt_transcribe` via authenticated ephemeral loopback HTTP.
 
+### Opt-in OpenRouter transcription (preview acceptance pending)
+- The remote adapter receives only final utterances after explicit online
+  permission and OpenRouter STT selection. It sends bounded WAV to the fixed
+  transcription endpoint and returns text into the same nonce-gated
+  `submit_transcript` path. No partial audio is uploaded and remote failure
+  does not silently fall back to local transcription.
+- The first-run proof remains local. Provider latency/accuracy is unmeasured;
+  real-key acceptance remains pending.
+
 ## Definition of done verification
 
 - Streaming path provides incremental AudioWorklet -> Rust bridge, genuine authenticated local partial hypotheses, and speculative pre-routing.

@@ -20,6 +20,7 @@
     "windows": [
       {
         "label": "main",
+        "create": false,
         "title": "ReflexDesk",
         "url": "index.html",
         "width": 820,
@@ -32,6 +33,7 @@
       },
       {
         "label": "overlay",
+        "create": false,
         "title": "ReflexDesk Reflex",
         "url": "overlay.html",
         "width": 190,
