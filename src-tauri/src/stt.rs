@@ -418,6 +418,7 @@ struct StreamSession {
     sample_rate: u32,
     language: String,
     last_partial: Option<String>,
+    last_partial_sample_count: usize,
     created_at: Instant,
     last_activity: Instant,
 }
@@ -431,6 +432,7 @@ impl StreamSession {
             sample_rate,
             language: language.to_string(),
             last_partial: None,
+            last_partial_sample_count: 0,
             created_at: now,
             last_activity: now,
         }
@@ -706,6 +708,7 @@ pub fn stream_chunk(
 
     // 3. Update session buffer
     let mut accumulated = Vec::new();
+    let mut partial_audio: Option<Vec<i16>> = None;
     {
         let mut guard = state
             .sessions
@@ -725,14 +728,46 @@ pub fn stream_chunk(
 
         if is_final {
             accumulated = std::mem::take(&mut session.samples);
+        } else if partial_hint.as_ref().map(|t| t.trim().is_empty()).unwrap_or(true) {
+            // Produce genuine partial hypotheses from the authenticated local
+            // backend at a bounded cadence. We re-run inference over the current
+            // utterance at most about once per 800 ms of newly received audio.
+            // This never executes an action; it only feeds UI/speculative routing.
+            let min_audio = (sample_rate as usize * 600) / 1000;
+            let min_delta = (sample_rate as usize * 800) / 1000;
+            if session.samples.len() >= min_audio
+                && session
+                    .samples
+                    .len()
+                    .saturating_sub(session.last_partial_sample_count)
+                    >= min_delta
+            {
+                partial_audio = Some(session.samples.clone());
+                session.last_partial_sample_count = session.samples.len();
+            }
         }
     }
 
-    // 4. Speculative Pre-Routing on Partial Text
+    // 4. Resolve either a caller-provided partial or a genuine local partial.
+    let generated_partial = if let Some(audio) = partial_audio {
+        state
+            .http
+            .transcribe_final(app, &audio, sample_rate, &language)
+            .ok()
+            .map(|transcript| transcript.text)
+            .filter(|text| !text.trim().is_empty())
+    } else {
+        None
+    };
+    let partial_text = partial_hint
+        .filter(|t| !t.trim().is_empty())
+        .or(generated_partial);
+
+    // 5. Speculative Pre-Routing on Partial Text
     let mut speculative_action = None;
     let mut speculative_confidence = None;
 
-    if let Some(text) = partial_hint.filter(|t| !t.trim().is_empty()) {
+    if let Some(text) = partial_text.as_ref() {
         let clean = text.trim();
         if clean.len() <= crate::transcript::MAX_TRANSCRIPT_CHARS && !clean.contains('\0') {
             let redacted = crate::redaction::redact_text(clean).into_owned();
@@ -753,6 +788,12 @@ pub fn stream_chunk(
                 }
             }
 
+            if let Ok(mut guard) = state.sessions.lock() {
+                if let Some(session) = guard.get_mut(&session_id) {
+                    session.last_partial = Some(clean.to_string());
+                }
+            }
+
             let _ = app.emit(
                 "reflexdesk://stt-partial",
                 PartialTranscriptEvent {
@@ -767,7 +808,7 @@ pub fn stream_chunk(
         }
     }
 
-    // 5. If final, run final transcription via production backend
+    // 6. If final, run final transcription via production backend
     if is_final {
         let samples_to_transcribe = if accumulated.is_empty() {
             samples
@@ -798,7 +839,7 @@ pub fn stream_chunk(
     } else {
         Ok(StreamChunkResult {
             session_id,
-            partial_text: None,
+            partial_text,
             speculative_action,
             confidence: speculative_confidence,
             is_final: false,
