@@ -477,6 +477,224 @@ mod windows_backend {
 
     pub struct WindowsBackend;
 
+    const UIA_ID_MASK: u64 = 0x4000_0000_0000_0000;
+
+    fn run_powershell(script: &str, envs: &[(&str, &str)]) -> Result<String, String> {
+        let mut command = std::process::Command::new("powershell.exe");
+        command.args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            script,
+        ]);
+        for (key, value) in envs {
+            command.env(key, value);
+        }
+        let output = command
+            .output()
+            .map_err(|e| format!("uia-powershell-unavailable: {e}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "uia-error: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            ));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    }
+
+    fn stable_uia_id(parts: &str) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        parts.hash(&mut hasher);
+        UIA_ID_MASK | (hasher.finish() & 0x0fff_ffff_ffff_ffff)
+    }
+
+    fn uia_elements(target_window: Option<&str>) -> Result<Vec<DesktopElement>, String> {
+        const SCRIPT: &str = r#"
+$ErrorActionPreference='Stop'
+Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName UIAutomationTypes
+$root=[System.Windows.Automation.AutomationElement]::RootElement
+$target=$env:REFLEX_TARGET
+$pidToInspect=0
+if ($target) {
+  $windows=$root.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+  foreach($w in $windows) {
+    if (($w.Current.Name -like "*$target*") -or ($w.Current.ClassName -like "*$target*")) {
+      $pidToInspect=$w.Current.ProcessId
+      break
+    }
+  }
+  if ($pidToInspect -eq 0) { throw "window not found: $target" }
+} else {
+  $focused=[System.Windows.Automation.AutomationElement]::FocusedElement
+  if ($null -ne $focused) { $pidToInspect=$focused.Current.ProcessId }
+}
+if ($pidToInspect -eq 0) { throw "no focused process" }
+$condition=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ProcessIdProperty,$pidToInspect)
+$items=$root.FindAll([System.Windows.Automation.TreeScope]::Descendants,$condition)
+$result=@()
+$limit=[Math]::Min($items.Count,600)
+for($i=0;$i -lt $limit;$i++) {
+  $e=$items.Item($i)
+  try {
+    $r=$e.Current.BoundingRectangle
+    if ($e.Current.IsOffscreen) { continue }
+    $role=$e.Current.LocalizedControlType
+    if (-not $role) { $role=$e.Current.ControlType.ProgrammaticName.Replace('ControlType.','').ToLowerInvariant() }
+    $name=$e.Current.Name
+    $automationId=$e.Current.AutomationId
+    $class=$e.Current.ClassName
+    $framework=$e.Current.FrameworkId
+    $actions=@()
+    $patterns=$e.GetSupportedPatterns()
+    foreach($p in $patterns) {
+      $pn=$p.ProgrammaticName
+      if($pn -like '*Invoke*'){$actions+='invoke';$actions+='click'}
+      elseif($pn -like '*Value*'){$actions+='type';$actions+='read'}
+      elseif($pn -like '*Toggle*'){$actions+='toggle';$actions+='click'}
+      elseif($pn -like '*Scroll*'){$actions+='scroll'}
+      elseif($pn -like '*SelectionItem*'){$actions+='select';$actions+='click'}
+    }
+    $result += [pscustomobject]@{
+      name=[string]$name; role=[string]$role; automation_id=[string]$automationId;
+      class=[string]$class; framework=[string]$framework;
+      x=[double]$r.X; y=[double]$r.Y; width=[double]$r.Width; height=[double]$r.Height;
+      enabled=[bool]$e.Current.IsEnabled; focused=[bool]$e.Current.HasKeyboardFocus;
+      actions=@($actions | Select-Object -Unique)
+    }
+  } catch {}
+}
+$result | ConvertTo-Json -Compress -Depth 5
+"#;
+        let target = target_window.unwrap_or("");
+        let output = run_powershell(SCRIPT, &[("REFLEX_TARGET", target)])?;
+        if output.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+        let parsed: serde_json::Value =
+            serde_json::from_str(&output).map_err(|e| format!("uia-json-invalid: {e}"))?;
+        let items = match parsed {
+            serde_json::Value::Array(items) => items,
+            serde_json::Value::Object(_) => vec![parsed],
+            _ => Vec::new(),
+        };
+        let mut out = Vec::new();
+        for (idx, item) in items.into_iter().enumerate() {
+            let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let role = item.get("role").and_then(|v| v.as_str()).unwrap_or("control").to_lowercase();
+            let automation_id = item.get("automation_id").and_then(|v| v.as_str()).unwrap_or("");
+            let class = item.get("class").and_then(|v| v.as_str()).unwrap_or("");
+            let framework = item.get("framework").and_then(|v| v.as_str()).unwrap_or("");
+            let key = format!("{name}|{role}|{automation_id}|{class}|{framework}|{idx}");
+            let actions = item
+                .get("actions")
+                .and_then(|v| v.as_array())
+                .map(|values| {
+                    values.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect()
+                })
+                .unwrap_or_default();
+            out.push(DesktopElement {
+                id: stable_uia_id(&key),
+                role,
+                name,
+                value: None,
+                bounds: Some(ElementBounds {
+                    x: item.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                    y: item.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                    width: item.get("width").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                    height: item.get("height").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                }),
+                enabled: item.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true),
+                focused: item.get("focused").and_then(|v| v.as_bool()).unwrap_or(false),
+                actions,
+                context: Some(format!("uia|{automation_id}|{class}|{framework}")),
+                window_id: None,
+            });
+        }
+        Ok(out)
+    }
+
+    fn uia_action(element: &DesktopElement, action: &str, text: Option<&str>) -> Result<String, String> {
+        const SCRIPT: &str = r#"
+$ErrorActionPreference='Stop'
+Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName UIAutomationTypes
+Add-Type -AssemblyName System.Windows.Forms
+$root=[System.Windows.Automation.AutomationElement]::RootElement
+$name=$env:REFLEX_NAME
+$automationId=$env:REFLEX_AUTOMATION_ID
+$role=$env:REFLEX_ROLE
+$all=$root.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
+$el=$null
+foreach($candidate in $all) {
+  try {
+    if ($automationId -and $candidate.Current.AutomationId -eq $automationId) { $el=$candidate; break }
+    if (-not $automationId -and $name -and $candidate.Current.Name -eq $name) {
+      $candidateRole=$candidate.Current.LocalizedControlType
+      if (-not $role -or $candidateRole -eq $role) { $el=$candidate; break }
+    }
+  } catch {}
+}
+if ($null -eq $el) { throw "element not found" }
+$action=$env:REFLEX_ACTION
+if($action -eq 'invoke') {
+  $pattern=$null
+  if($el.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern,[ref]$pattern)) {
+    ([System.Windows.Automation.InvokePattern]$pattern).Invoke()
+  } elseif($el.TryGetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern,[ref]$pattern)) {
+    ([System.Windows.Automation.TogglePattern]$pattern).Toggle()
+  } elseif($el.TryGetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern,[ref]$pattern)) {
+    ([System.Windows.Automation.SelectionItemPattern]$pattern).Select()
+  } else {
+    $el.SetFocus()
+    [System.Windows.Forms.SendKeys]::SendWait('{ENTER}')
+  }
+  'ok'
+} elseif($action -eq 'type') {
+  $pattern=$null
+  if($el.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern,[ref]$pattern)) {
+    ([System.Windows.Automation.ValuePattern]$pattern).SetValue($env:REFLEX_TEXT)
+    'ok'
+  } else { throw "element does not expose ValuePattern" }
+} elseif($action -eq 'read') {
+  $pattern=$null
+  if($el.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern,[ref]$pattern)) {
+    ([System.Windows.Automation.ValuePattern]$pattern).Current.Value | ConvertTo-Json -Compress
+  } else {
+    ([string]$el.Current.Name) | ConvertTo-Json -Compress
+  }
+} elseif($action -eq 'scroll-down' -or $action -eq 'scroll-up') {
+  $pattern=$null
+  if($el.TryGetCurrentPattern([System.Windows.Automation.ScrollItemPattern]::Pattern,[ref]$pattern)) {
+    ([System.Windows.Automation.ScrollItemPattern]$pattern).ScrollIntoView()
+  }
+  $el.SetFocus()
+  if($action -eq 'scroll-down') {[System.Windows.Forms.SendKeys]::SendWait('{PGDN}')} else {[System.Windows.Forms.SendKeys]::SendWait('{PGUP}')}
+  'ok'
+} else { throw "unsupported UIA action" }
+"#;
+        let automation_id = element
+            .context
+            .as_deref()
+            .and_then(|ctx| ctx.split('|').nth(1))
+            .unwrap_or("");
+        let output = run_powershell(
+            SCRIPT,
+            &[
+                ("REFLEX_NAME", element.name.as_str()),
+                ("REFLEX_AUTOMATION_ID", automation_id),
+                ("REFLEX_ROLE", element.role.as_str()),
+                ("REFLEX_ACTION", action),
+                ("REFLEX_TEXT", text.unwrap_or("")),
+            ],
+        )?;
+        Ok(output)
+    }
+
     unsafe extern "system" fn enum_windows_callback(hwnd: HWND, lparam: LPARAM) -> BOOL {
         let windows = &mut *(lparam as *mut Vec<(HWND, String, String, RECT, bool, bool)>);
 
@@ -604,7 +822,7 @@ mod windows_backend {
                 healthy: true,
                 platform: "windows",
                 permissions_granted: true,
-                details: "Windows native Win32 accessibility fallback available; UIA patterns are not linked".into(),
+                details: "Windows UI Automation semantic controls enabled with Win32 fallback for legacy HWND controls".into(),
                 recovery_instructions: None,
             }
         }
@@ -662,15 +880,25 @@ mod windows_backend {
                 fg_hwnd
             };
 
-            let mut elements = Vec::new();
+            let mut elements = uia_elements(target_window).unwrap_or_default();
             if !inspect_hwnd.is_null() {
+                let mut win32_elements = Vec::new();
                 unsafe {
                     EnumChildWindows(
                         inspect_hwnd,
                         Some(enum_child_callback),
-                        &mut elements as *mut _ as LPARAM,
+                        &mut win32_elements as *mut _ as LPARAM,
                     );
                 }
+                // UIA sees modern WinUI/WPF/Electron controls. Keep Win32 controls
+                // as a compatibility fallback when UIA does not expose them.
+                elements.extend(win32_elements.into_iter().filter(|legacy| {
+                    !elements.iter().any(|modern| {
+                        modern.name == legacy.name
+                            && modern.role == legacy.role
+                            && modern.bounds == legacy.bounds
+                    })
+                }));
             }
 
             let gen = SNAPSHOT_GENERATION.fetch_add(1, Ordering::SeqCst);
@@ -795,10 +1023,17 @@ mod windows_backend {
         }
 
         fn invoke_element(&self, element: &DesktopElement, _action: &str) -> Result<(), String> {
-            self.click_element(element)
+            if element.id & UIA_ID_MASK != 0 {
+                uia_action(element, "invoke", None).map(|_| ())
+            } else {
+                self.click_element(element)
+            }
         }
 
         fn click_element(&self, element: &DesktopElement) -> Result<(), String> {
+            if element.id & UIA_ID_MASK != 0 {
+                return uia_action(element, "invoke", None).map(|_| ());
+            }
             let hwnd = (element.id & !0x8000_0000_0000_0000) as usize as HWND;
             if hwnd.is_null() {
                 return Err("invalid-element-id: element has no valid window handle".into());
@@ -824,6 +1059,9 @@ mod windows_backend {
             text: &str,
             _clear_first: bool,
         ) -> Result<(), String> {
+            if element.id & UIA_ID_MASK != 0 {
+                return uia_action(element, "type", Some(text)).map(|_| ());
+            }
             let hwnd = (element.id & !0x8000_0000_0000_0000) as usize as HWND;
             if hwnd.is_null() {
                 return Err("invalid-element-id: element has no valid window handle".into());
@@ -880,6 +1118,10 @@ mod windows_backend {
             direction: &str,
             amount: f64,
         ) -> Result<(), String> {
+            if element.id & UIA_ID_MASK != 0 {
+                let action = if direction.eq_ignore_ascii_case("up") { "scroll-up" } else { "scroll-down" };
+                return uia_action(element, action, None).map(|_| ());
+            }
             let hwnd = (element.id & !0x8000_0000_0000_0000) as usize as HWND;
             if hwnd.is_null() {
                 return Err("invalid-element-id: element has no valid window handle".into());
@@ -905,6 +1147,10 @@ mod windows_backend {
         }
 
         fn read_element(&self, element: &DesktopElement) -> Result<String, String> {
+            if element.id & UIA_ID_MASK != 0 {
+                let raw = uia_action(element, "read", None)?;
+                return serde_json::from_str::<String>(&raw).or(Ok(raw));
+            }
             let hwnd = (element.id & !0x8000_0000_0000_0000) as usize as HWND;
             if hwnd.is_null() {
                 return Ok(element.name.clone());
