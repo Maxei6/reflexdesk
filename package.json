@@ -11,7 +11,7 @@
     "web:build": "vite build",
     "test": "node --test tests/*.test.mjs",
     "check": "node scripts/validate.mjs && npm test",
-    "prepare:icons": "tauri icon assets/reflexdesk-icon.svg",
+    "prepare:icons": "tauri icon assets/reflexdesk-installer-icon.svg",
     "prepare:stt": "node scripts/prepare-stt-runtime.mjs"
   },
   "dependencies": {
