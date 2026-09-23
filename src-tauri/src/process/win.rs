@@ -10,16 +10,20 @@ use std::path::Path;
 use std::process::Command;
 
 use windows_sys::Win32::Foundation::{
-    CloseHandle, GetLastError, BOOL, HANDLE, INVALID_HANDLE_VALUE,
+    CloseHandle, GetLastError, BOOL, FILETIME, HANDLE, INVALID_HANDLE_VALUE,
+};
+use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+    CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
 };
 use windows_sys::Win32::System::JobObjects::{
-    AssignProcessToJobObject, CreateJobObjectW, SetInformationJobObject, TerminateJobObject,
-    JobObjectExtendedLimitInformation, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+    AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+    SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
 use windows_sys::Win32::System::Threading::{
-    CreateProcessW, ResumeThread, TerminateProcess, PROCESS_INFORMATION, STARTUPINFOW,
-    CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT,
+    CreateProcessW, GetProcessTimes, OpenProcess, OpenThread, ResumeThread, TerminateProcess,
+    CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, PROCESS_INFORMATION,
+    PROCESS_QUERY_LIMITED_INFORMATION, STARTUPINFOW, THREAD_SUSPEND_RESUME,
 };
 
 /// Encapsulates a Windows Job Object handle with `KILL_ON_JOB_CLOSE`.
@@ -37,7 +41,10 @@ impl PlatformHandle {
         unsafe {
             let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
             if job == 0 as _ || job == INVALID_HANDLE_VALUE {
-                return Err(format!("CreateJobObjectW failed (error {})", GetLastError()));
+                return Err(format!(
+                    "CreateJobObjectW failed (error {})",
+                    GetLastError()
+                ));
             }
 
             let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
@@ -65,7 +72,10 @@ impl PlatformHandle {
         unsafe {
             let success: BOOL = AssignProcessToJobObject(self.job, process_handle);
             if success == 0 {
-                return Err(format!("AssignProcessToJobObject failed (error {})", GetLastError()));
+                return Err(format!(
+                    "AssignProcessToJobObject failed (error {})",
+                    GetLastError()
+                ));
             }
             Ok(())
         }
@@ -76,7 +86,10 @@ impl PlatformHandle {
         unsafe {
             let success: BOOL = TerminateJobObject(self.job, 1);
             if success == 0 {
-                return Err(format!("TerminateJobObject failed (error {})", GetLastError()));
+                return Err(format!(
+                    "TerminateJobObject failed (error {})",
+                    GetLastError()
+                ));
             }
             Ok(())
         }
@@ -86,6 +99,10 @@ impl PlatformHandle {
     pub fn raw_handle(&self) -> HANDLE {
         self.job
     }
+
+    pub fn identity_label(&self) -> String {
+        format!("windows-job-handle-{}", self.job as usize)
+    }
 }
 
 impl Drop for PlatformHandle {
@@ -94,6 +111,26 @@ impl Drop for PlatformHandle {
             if self.job != 0 as _ && self.job != INVALID_HANDLE_VALUE {
                 CloseHandle(self.job);
             }
+        }
+    }
+}
+
+pub fn process_start_identity(pid: u32) -> Option<u64> {
+    unsafe {
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if process == 0 as _ {
+            return None;
+        }
+        let mut created: FILETIME = std::mem::zeroed();
+        let mut exited: FILETIME = std::mem::zeroed();
+        let mut kernel: FILETIME = std::mem::zeroed();
+        let mut user: FILETIME = std::mem::zeroed();
+        let ok = GetProcessTimes(process, &mut created, &mut exited, &mut kernel, &mut user);
+        CloseHandle(process);
+        if ok == 0 {
+            None
+        } else {
+            Some(((created.dwHighDateTime as u64) << 32) | created.dwLowDateTime as u64)
         }
     }
 }
@@ -173,7 +210,9 @@ pub fn spawn_suspended_in_job(
         None
     };
 
-    let env_ptr = env_block_wide.as_mut().map_or(std::ptr::null_mut(), |v| v.as_mut_ptr() as *mut _);
+    let env_ptr = env_block_wide
+        .as_mut()
+        .map_or(std::ptr::null_mut(), |v| v.as_mut_ptr() as *mut _);
 
     unsafe {
         let mut si: STARTUPINFOW = std::mem::zeroed();
@@ -225,8 +264,9 @@ pub fn spawn_suspended_in_job(
     }
 }
 
-/// Spawns a process with std::process::Command and immediately assigns it to the Job Object.
-/// Used when stdio piping is required.
+/// Spawns a process with piped stdio suspended, assigns it to the Job Object,
+/// and only then resumes its main thread. This preserves the same zero-execution
+/// window invariant as `spawn_suspended_in_job`.
 pub fn spawn_command_in_job(
     command: &mut Command,
 ) -> Result<(std::process::Child, PlatformHandle), String> {
@@ -234,21 +274,63 @@ pub fn spawn_command_in_job(
     use std::os::windows::process::CommandExt;
 
     let job_handle = PlatformHandle::new()?;
-
-    // Do not show console window
-    command.creation_flags(CREATE_NO_WINDOW);
+    command.creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED);
 
     let mut child = command
         .spawn()
-        .map_err(|e| format!("failed to spawn child process: {e}"))?;
-
+        .map_err(|e| format!("failed to spawn suspended child process: {e}"))?;
     let raw_handle = child.as_raw_handle() as HANDLE;
     if let Err(e) = job_handle.assign_process(raw_handle) {
-        // Child spawned but failed to join the job: kill it before returning
-        // so a failed assign can never leak an unsupervised process.
         let _ = child.kill();
         let _ = child.wait();
-        return Err(format!("Failed to assign spawned child to Job Object: {e}"));
+        return Err(format!(
+            "failed to assign suspended child to Job Object: {e}"
+        ));
+    }
+
+    let pid = child.id();
+    let resume_result = unsafe {
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+        if snapshot == INVALID_HANDLE_VALUE {
+            Err(format!(
+                "CreateToolhelp32Snapshot failed (error {})",
+                GetLastError()
+            ))
+        } else {
+            let mut entry: THREADENTRY32 = std::mem::zeroed();
+            entry.dwSize = std::mem::size_of::<THREADENTRY32>() as u32;
+            let mut found = Thread32First(snapshot, &mut entry) != 0;
+            let mut result = Err(format!(
+                "main thread for suspended process {pid} was not found"
+            ));
+            while found {
+                if entry.th32OwnerProcessID == pid {
+                    let thread = OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID);
+                    if thread == 0 as _ {
+                        result = Err(format!("OpenThread failed (error {})", GetLastError()));
+                    } else {
+                        let resumed = ResumeThread(thread);
+                        CloseHandle(thread);
+                        result = if resumed == u32::MAX {
+                            Err(format!("ResumeThread failed (error {})", GetLastError()))
+                        } else {
+                            Ok(())
+                        };
+                    }
+                    break;
+                }
+                found = Thread32Next(snapshot, &mut entry) != 0;
+            }
+            CloseHandle(snapshot);
+            result
+        }
+    };
+
+    if let Err(error) = resume_result {
+        let _ = job_handle.terminate();
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(error);
     }
 
     Ok((child, job_handle))

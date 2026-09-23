@@ -1,24 +1,25 @@
-mod harness;
 pub mod benchmark;
-pub mod hardware;
-pub mod desktop;
-pub mod reflex;
-pub mod planner;
 pub mod browser;
+pub mod desktop;
+pub mod hardware;
+mod harness;
 mod lifecycle;
 mod model_manager;
+pub mod observability;
+pub mod planner;
 mod policy;
 mod process;
-pub mod observability;
 mod process_supervisor;
- mod redaction;
+mod redaction;
+pub mod reflex;
 pub mod secrets;
- mod settings;
+mod security;
+mod settings;
+pub mod skills;
 mod stt;
 mod tools;
 mod transcript;
 mod tray;
-pub mod skills;
 pub mod updater;
 
 use lifecycle::{Phase, RuntimeSnapshot, RuntimeState};
@@ -27,7 +28,6 @@ use process_supervisor::ProcessSupervisor;
 use serde::Serialize;
 use settings::{AppSettings, SettingsState};
 use std::{
-    process::Command,
     sync::Mutex,
     thread,
     time::{Duration, Instant},
@@ -64,7 +64,11 @@ fn update_runtime(
     let _ = app.emit("reflexdesk://state", &snapshot);
     observability::log_lifecycle(
         &format!("{:?}", phase).to_lowercase(),
-        if sanitized_error.is_some() { "error" } else { "ok" },
+        if sanitized_error.is_some() {
+            "error"
+        } else {
+            "ok"
+        },
         sanitized_error.as_deref(),
     );
     Ok(snapshot)
@@ -92,6 +96,10 @@ fn apply_autostart(app: &AppHandle, enabled: bool) -> Result<bool, String> {
         manager.enable().map_err(|e| e.to_string())?;
     } else {
         manager.disable().map_err(|e| e.to_string())?;
+    }
+    Ok(enabled)
+}
+
 fn set_listening_internal(app: &AppHandle, next: bool) -> Result<RuntimeSnapshot, String> {
     let runtime = app.state::<RuntimeState>();
     let current = runtime.snapshot();
@@ -353,7 +361,8 @@ fn complete_setup(
 ) -> Result<AppSettings, String> {
     let stt_state = app.state::<stt::SttState>();
     let model_mgr = app.state::<ModelManager>();
-    if !stt::status(&app, &stt_state).ready || !model_mgr.is_ready_for_engine(DEFAULT_STT_MODEL_ID) {
+    if !stt::status(&app, &stt_state).ready || !model_mgr.is_ready_for_engine(DEFAULT_STT_MODEL_ID)
+    {
         return Err("The local speech engine and model are not ready yet.".into());
     }
 
@@ -370,10 +379,7 @@ fn complete_setup(
 }
 
 #[tauri::command]
-fn reset_setup(
-    app: AppHandle,
-    state: State<'_, SettingsState>,
-) -> Result<AppSettings, String> {
+fn reset_setup(app: AppHandle, state: State<'_, SettingsState>) -> Result<AppSettings, String> {
     let mut settings = state.snapshot();
     settings.setup_complete = false;
     settings.voice_benchmark_ms = None;
@@ -506,29 +512,35 @@ fn execute_verified(
     };
 
     // 1. Policy decision: validation, negation, authorization, pre-cancel.
-    let sanitized_args = match policy::decide_and_prepare_with_settings(envelope, raw_text, settings) {
-        policy::PolicyDecision::Denied { reason } => return denied(reason),
-        policy::PolicyDecision::NeedConfirm { confirmation_id, tool, risk, args_summary } => {
-            observability::log_tool(
-                &envelope.tool,
-                "confirm",
-                None,
-                Some(&envelope.session_id),
-                None,
-            );
-            return policy::ActionExecutionResult {
-                status: "confirm".into(),
-                output: None,
-                verification: None,
-                confirmation_id: Some(confirmation_id),
-                tool: Some(tool),
-                risk: Some(risk),
-                args_summary: Some(args_summary),
-                reason: None,
-            };
-        }
-        policy::PolicyDecision::ExecuteNow { sanitized_args } => sanitized_args,
-    };
+    let sanitized_args =
+        match policy::decide_and_prepare_with_settings(envelope, raw_text, settings) {
+            policy::PolicyDecision::Denied { reason } => return denied(reason),
+            policy::PolicyDecision::NeedConfirm {
+                confirmation_id,
+                tool,
+                risk,
+                args_summary,
+            } => {
+                observability::log_tool(
+                    &envelope.tool,
+                    "confirm",
+                    None,
+                    Some(&envelope.session_id),
+                    None,
+                );
+                return policy::ActionExecutionResult {
+                    status: "confirm".into(),
+                    output: None,
+                    verification: None,
+                    confirmation_id: Some(confirmation_id),
+                    tool: Some(tool),
+                    risk: Some(risk),
+                    args_summary: Some(args_summary),
+                    reason: None,
+                };
+            }
+            policy::PolicyDecision::ExecuteNow { sanitized_args } => sanitized_args,
+        };
 
     // 2. Pre-execution cancellation check.
     if policy::is_cancelled(&envelope.session_id) {
@@ -541,12 +553,24 @@ fn execute_verified(
     let _ = update_runtime(app, Phase::Executing, None);
     let _ = app.emit("reflexdesk://visual-state", "executing");
     let settle = |app: &AppHandle, was_listening: bool| {
-        let next = if was_listening { Phase::Listening } else { Phase::Ready };
+        let next = if was_listening {
+            Phase::Listening
+        } else {
+            Phase::Ready
+        };
         let _ = update_runtime(app, next, None);
     };
 
     // 3. Execution via the tool registry surface.
-    let tool_res = match tools::execute(&envelope.tool, &sanitized_args, supervisor) {
+    let updater = app.state::<updater::UpdaterService>();
+    let model_manager = app.state::<ModelManager>();
+    let tool_res = match tools::execute(
+        &envelope.tool,
+        &sanitized_args,
+        supervisor,
+        &updater,
+        &model_manager,
+    ) {
         Ok(res) => res,
         Err(err) => {
             let redacted_err = redaction::redact_error(&err);
@@ -589,7 +613,13 @@ fn execute_verified(
     }
 
     let _ = app.emit("reflexdesk://visual-state", "success");
-    observability::log_tool(&envelope.tool, "success", None, Some(&envelope.session_id), None);
+    observability::log_tool(
+        &envelope.tool,
+        "success",
+        None,
+        Some(&envelope.session_id),
+        None,
+    );
     settle(app, was_listening);
     let res = policy::ActionExecutionResult {
         status: "success".into(),
@@ -615,7 +645,14 @@ fn request_action(
     raw_text: Option<String>,
 ) -> Result<policy::ActionExecutionResult, String> {
     let settings = settings_state.snapshot();
-    Ok(execute_verified(&app, &runtime, &supervisor, &settings, &envelope, raw_text.as_deref()))
+    Ok(execute_verified(
+        &app,
+        &runtime,
+        &supervisor,
+        &settings,
+        &envelope,
+        raw_text.as_deref(),
+    ))
 }
 
 #[tauri::command]
@@ -632,7 +669,14 @@ fn confirm_action(
     }
     let settings = settings_state.snapshot();
     match policy::resolve_confirmation(&confirmation_id, approve) {
-        Some(envelope) => Ok(execute_verified(&app, &runtime, &supervisor, &settings, &envelope, None)),
+        Some(envelope) => Ok(execute_verified(
+            &app,
+            &runtime,
+            &supervisor,
+            &settings,
+            &envelope,
+            None,
+        )),
         None => Ok(policy::ActionExecutionResult {
             status: "deny".into(),
             output: None,
@@ -641,7 +685,11 @@ fn confirm_action(
             tool: None,
             risk: None,
             args_summary: None,
-            reason: Some(if approve { "confirmation-expired-or-not-found".into() } else { "user-denied".into() }),
+            reason: Some(if approve {
+                "confirmation-expired-or-not-found".into()
+            } else {
+                "user-denied".into()
+            }),
         }),
     }
 }
@@ -666,7 +714,6 @@ fn get_browser_pairing_secret() -> String {
     browser::get_pairing_secret()
 }
 
-
 #[tauri::command]
 fn laya_route(
     app: AppHandle,
@@ -683,16 +730,14 @@ fn laya_route(
     let _ = app.emit("reflexdesk://visual-state", "thinking");
 
     let url = format!("{}/route", endpoint.trim_end_matches('/'));
-    let mut client_builder = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_millis(500));
+    let mut client_builder =
+        reqwest::blocking::Client::builder().timeout(Duration::from_millis(500));
     let client = client_builder.build().map_err(|e| e.to_string())?;
 
-    let mut req = client
-        .post(&url)
-        .json(&serde_json::json!({
-            "text": text,
-            "context": { "source": "reflexdesk" }
-        }));
+    let mut req = client.post(&url).json(&serde_json::json!({
+        "text": text,
+        "context": { "source": "reflexdesk" }
+    }));
 
     // Inject ephemeral bearer token if supervised Laya endpoint matches
     if let Some(engine) = app.try_state::<reflex::ReflexEngine>() {
@@ -714,7 +759,11 @@ fn laya_route(
 
     let _ = update_runtime(
         &app,
-        if was_listening { Phase::Listening } else { Phase::Ready },
+        if was_listening {
+            Phase::Listening
+        } else {
+            Phase::Ready
+        },
         None,
     );
     result
@@ -759,6 +808,7 @@ fn get_reflex_health(app: AppHandle) -> serde_json::Value {
             "ready": true,
         })
     }
+}
 
 #[tauri::command]
 fn planner_route(
@@ -787,15 +837,13 @@ fn planner_route(
                 .map(std::sync::Arc::new)
         });
 
-    let mut planner_adapter = planner::OpenAiCompatibleLocalPlanner::new(
-        endpoint,
-        model,
-        persisted_allow_online,
-    );
+    let mut planner_adapter =
+        planner::OpenAiCompatibleLocalPlanner::new(endpoint, model, persisted_allow_online);
     if let Some(key) = secret_bytes {
         planner_adapter = planner_adapter.with_api_key(Some(key));
     }
     let ctx = planner::PlannerContext::default();
+    let req = planner::PlannerRequest::new("planner_route", text, allow_remote);
 
     let result = (|| -> Result<serde_json::Value, String> {
         use planner::LocalPlanner;
@@ -815,7 +863,11 @@ fn planner_route(
 
     let _ = update_runtime(
         &app,
-        if was_listening { Phase::Listening } else { Phase::Ready },
+        if was_listening {
+            Phase::Listening
+        } else {
+            Phase::Ready
+        },
         None,
     );
     result
@@ -824,18 +876,16 @@ fn planner_route(
 #[tauri::command]
 fn planner_health(app: AppHandle) -> bool {
     let settings = app.state::<SettingsState>().snapshot();
-    let secret_bytes = settings
-        .planner_secret_ref
-        .as_ref()
-        .and_then(|sref| {
-            app.state::<secrets::AppSecretStore>()
-                .0
-                .get(sref)
-                .ok()
-                .map(std::sync::Arc::new)
-        });
+    let secret_bytes = settings.planner_secret_ref.as_ref().and_then(|sref| {
+        app.state::<secrets::AppSecretStore>()
+            .0
+            .get(sref)
+            .ok()
+            .map(std::sync::Arc::new)
+    });
     let service = planner::PlannerService::new_with_secret(&settings, secret_bytes);
     service.health()
+}
 
 #[tauri::command]
 fn planner_status(app: AppHandle) -> planner::PlannerStatus {
@@ -847,7 +897,7 @@ fn planner_status(app: AppHandle) -> planner::PlannerStatus {
 #[tauri::command]
 fn detect_harnesses() -> Vec<harness::HarnessStatus> {
     harness::detect_all()
- }
+}
 
 #[tauri::command]
 fn connect_provider(
@@ -989,17 +1039,12 @@ fn get_provider_status(
 }
 
 #[tauri::command]
-fn list_secret_metadata(
-    app: AppHandle,
-) -> Result<Vec<secrets::SecretMetadata>, String> {
+fn list_secret_metadata(app: AppHandle) -> Result<Vec<secrets::SecretMetadata>, String> {
     let secret_store = app.state::<secrets::AppSecretStore>();
     secret_store.0.list_metadata()
 }
 #[tauri::command]
-fn stt_status(
-    app: AppHandle,
-    state: State<'_, stt::SttState>,
-) -> stt::SttStatus {
+fn stt_status(app: AppHandle, state: State<'_, stt::SttState>) -> stt::SttStatus {
     stt::status(&app, &state)
 }
 
@@ -1022,7 +1067,11 @@ fn stt_transcribe(
 
     let _ = update_runtime(
         &app,
-        if was_listening { Phase::Listening } else { Phase::Ready },
+        if was_listening {
+            Phase::Listening
+        } else {
+            Phase::Ready
+        },
         None,
     );
     result
@@ -1068,9 +1117,7 @@ fn stt_cancel_stream(
 }
 
 #[tauri::command]
-fn stt_baseline_metrics(
-    state: State<'_, stt::SttState>,
-) -> stt::native::SttBaselineMetrics {
+fn stt_baseline_metrics(state: State<'_, stt::SttState>) -> stt::native::SttBaselineMetrics {
     stt::baseline_metrics(&state)
 }
 
@@ -1116,14 +1163,17 @@ fn export_diagnostics(
     observability::export_diagnostics(&app, path.map(std::path::PathBuf::from))
 }
 
-
 // ---------------------------------------------------------------------------
 // Skills Automation Commands (Plan 18)
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
 fn list_skills() -> Result<Vec<skills::SkillSummary>, String> {
-    Ok(skills::global_skill_store().list().iter().map(skills::SkillSummary::from).collect())
+    Ok(skills::global_skill_store()
+        .list()
+        .iter()
+        .map(skills::SkillSummary::from)
+        .collect())
 }
 
 #[tauri::command]
@@ -1158,7 +1208,8 @@ fn execute_skill(
     let skill = skills::global_skill_store()
         .get(&id)
         .ok_or_else(|| format!("skill '{id}' not found"))?;
-    let sess = session_id.unwrap_or_else(|| format!("skill_exec_{}", policy::new_confirmation_id()));
+    let sess =
+        session_id.unwrap_or_else(|| format!("skill_exec_{}", policy::new_confirmation_id()));
     let empty_inputs = std::collections::HashMap::new();
     let user_inputs = inputs.as_ref().unwrap_or(&empty_inputs);
     let settings = settings_state.snapshot();
@@ -1257,7 +1308,21 @@ pub fn run() {
                 .unwrap_or_else(|_| std::path::PathBuf::from("vault"));
             let vault_store = secrets::OsVaultSecretStore::new(vault_dir)
                 .map_err(|e| format!("failed to initialize OsVaultSecretStore: {e}"))?;
-            app.manage(secrets::AppSecretStore::new(std::sync::Arc::new(vault_store)));
+            app.manage(secrets::AppSecretStore::new(std::sync::Arc::new(
+                vault_store,
+            )));
+            if let Err(error) = browser::initialize_pairing_secret() {
+                eprintln!(
+                    "Browser pairing disabled: {}",
+                    redaction::redact_error(&error)
+                );
+                let _ = browser::start_bridge();
+            } else if let Err(error) = browser::start_bridge() {
+                eprintln!(
+                    "Browser bridge disabled: {}",
+                    redaction::redact_error(&error)
+                );
+            }
             let app_data_dir = app
                 .path()
                 .app_data_dir()
@@ -1373,7 +1438,7 @@ pub fn run() {
             updater::get_update_status,
             updater::set_update_channel,
             updater::check_for_updates,
-            updater::rollback_update,
         ])
+        .run(tauri::generate_context!())
         .expect("error while running ReflexDesk");
 }

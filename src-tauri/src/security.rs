@@ -22,20 +22,18 @@ pub const MAX_AUDIO_DURATION_MS: u64 = 30_000;
 pub const BYTES_PER_SAMPLE: usize = 2;
 
 /// Minimum audio payload in bytes (100 ms at 16 kHz, 16-bit mono = 3,200 bytes).
-pub const MIN_AUDIO_BYTES: usize =
-    (REQUIRED_SAMPLE_RATE_HZ as usize / 10) * BYTES_PER_SAMPLE;
+pub const MIN_AUDIO_BYTES: usize = (REQUIRED_SAMPLE_RATE_HZ as usize / 10) * BYTES_PER_SAMPLE;
 
 /// Maximum audio payload in bytes (30 s at 16 kHz, 16-bit mono = 960,000 bytes).
-pub const MAX_AUDIO_BYTES: usize =
-    (REQUIRED_SAMPLE_RATE_HZ as usize * 30) * BYTES_PER_SAMPLE;
+pub const MAX_AUDIO_BYTES: usize = (REQUIRED_SAMPLE_RATE_HZ as usize * 30) * BYTES_PER_SAMPLE;
 
 /// Hard IPC audio payload cap enforced BEFORE full allocation (1 MiB = 1,048,576 bytes).
 pub const MAX_IPC_AUDIO_PAYLOAD_BYTES: usize = 1_048_576;
 
 /// Supported language codes for speech recognition.
 pub const SUPPORTED_LANGUAGES: &[&str] = &[
-    "auto", "en", "it", "es", "fr", "de", "pt", "nl", "tr", "ru",
-    "ar", "hi", "ja", "ko", "vi", "uk", "zh",
+    "auto", "en", "it", "es", "fr", "de", "pt", "nl", "tr", "ru", "ar", "hi", "ja", "ko", "vi",
+    "uk", "zh",
 ];
 
 /// Characters that can never appear raw in a well-formed URL, rejected before parsing.
@@ -46,9 +44,7 @@ pub const SUPPORTED_LANGUAGES: &[&str] = &[
 /// such as `https://example.com/?a=1&b=2` or `browser.search` result URLs.
 /// What remains rejected can never occur raw in a valid URL and signals
 /// smuggling or shell-concatenation attempts.
-pub const FORBIDDEN_SHELL_METACHARS: &[char] = &[
-    '|', '<', '>', '\\', '`', '^', '"', '\'',
-];
+pub const FORBIDDEN_SHELL_METACHARS: &[char] = &['|', '<', '>', '\\', '`', '^', '"', '\''];
 
 /// Validates whether a given URL string points strictly to a local loopback interface.
 ///
@@ -69,6 +65,23 @@ pub fn is_loopback_url(s: &str) -> bool {
     }
     // Reject backslashes to avoid URL parser normalization ambiguities
     if s.contains('\\') {
+        return false;
+    }
+    let path_and_more = s
+        .split_once("://")
+        .map(|(_, remainder)| remainder)
+        .unwrap_or_default()
+        .split_once('/')
+        .map(|(_, path)| path)
+        .unwrap_or_default()
+        .split(['?', '#'])
+        .next()
+        .unwrap_or_default();
+    let decoded_path = match urlencoding::decode(path_and_more) {
+        Ok(path) => path,
+        Err(_) => return false,
+    };
+    if decoded_path.split('/').any(|segment| segment == "..") {
         return false;
     }
 
@@ -154,10 +167,14 @@ pub fn check_transcript_bounds(
 
     // 3. Audio duration bounds (100 ms minimum, 30 s maximum)
     if len_bytes < MIN_AUDIO_BYTES {
-        return Err("audio-too-short: speech segment must be at least 100ms (3200 bytes at 16kHz 16-bit)");
+        return Err(
+            "audio-too-short: speech segment must be at least 100ms (3200 bytes at 16kHz 16-bit)",
+        );
     }
     if len_bytes > MAX_AUDIO_BYTES {
-        return Err("audio-too-long: speech segment exceeds 30-second limit (960000 bytes at 16kHz 16-bit)");
+        return Err(
+            "audio-too-long: speech segment exceeds 30-second limit (960000 bytes at 16kHz 16-bit)",
+        );
     }
 
     // 4. Language allowlist validation
@@ -178,10 +195,7 @@ pub fn check_transcript_bounds(
 /// Validates tool execution arguments by delegating to the central policy registry.
 ///
 /// Fails closed if the tool is unknown or arguments do not conform to schema.
-pub fn check_tool_args(
-    tool: &str,
-    args: &serde_json::Value,
-) -> Result<serde_json::Value, String> {
+pub fn check_tool_args(tool: &str, args: &serde_json::Value) -> Result<serde_json::Value, String> {
     crate::policy::validate_args(tool, args)
 }
 
@@ -215,15 +229,17 @@ pub fn sanitize_open_external(target: &str) -> Result<String, String> {
     }
 
     // Reject characters that can never appear raw in a valid URL.
-    if let Some(bad_char) = trimmed.chars().find(|c| FORBIDDEN_SHELL_METACHARS.contains(c)) {
+    if let Some(bad_char) = trimmed
+        .chars()
+        .find(|c| FORBIDDEN_SHELL_METACHARS.contains(c))
+    {
         return Err(format!(
             "target URL contains prohibited shell metacharacter: '{bad_char}'"
         ));
     }
 
     // Parse URL strictly
-    let parsed = Url::parse(trimmed)
-        .map_err(|e| format!("invalid URL format: {e}"))?;
+    let parsed = Url::parse(trimmed).map_err(|e| format!("invalid URL format: {e}"))?;
 
     // Strictly enforce http and https schemes
     match parsed.scheme() {
@@ -279,6 +295,7 @@ mod tests {
         // Normalization and path tricks
         assert!(!is_loopback_url("http://127.0.0.1\\attacker.com"));
         assert!(!is_loopback_url("http://127.0.0.1/../../attacker.com"));
+        assert!(!is_loopback_url("http://127.0.0.1/%2e%2e/attacker.com"));
 
         // Non-http schemes
         assert!(!is_loopback_url("file:///etc/passwd"));

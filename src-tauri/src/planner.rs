@@ -100,7 +100,10 @@ impl PlannerContext {
                 desk.as_str()
             };
             if !truncated.trim().is_empty() {
-                parts.push(format!("Desktop Accessibility State:\n{}", truncated.trim()));
+                parts.push(format!(
+                    "Desktop Accessibility State:\n{}",
+                    truncated.trim()
+                ));
             }
         }
 
@@ -165,7 +168,11 @@ pub trait LocalPlanner: Send + Sync {
     fn capabilities(&self) -> PlannerCapabilities;
 
     /// Generate policy-compliant action envelopes from context and request.
-    fn plan(&self, ctx: &PlannerContext, req: &PlannerRequest) -> Result<Vec<ActionEnvelope>, String>;
+    fn plan(
+        &self,
+        ctx: &PlannerContext,
+        req: &PlannerRequest,
+    ) -> Result<Vec<ActionEnvelope>, String>;
 
     /// Cancel planning for a given session.
     fn cancel(&self, session_id: &str);
@@ -345,7 +352,11 @@ pub struct CrispAsrChatPlanner {
 }
 
 impl CrispAsrChatPlanner {
-    pub fn new(model_id: impl Into<String>, tier: impl Into<String>, cache_path: impl AsRef<Path>) -> Self {
+    pub fn new(
+        model_id: impl Into<String>,
+        tier: impl Into<String>,
+        cache_path: impl AsRef<Path>,
+    ) -> Self {
         Self {
             model_id: model_id.into(),
             tier: tier.into(),
@@ -369,7 +380,9 @@ impl CrispAsrChatPlanner {
         }
         let should_unload = {
             let guard = self.last_used.lock().unwrap_or_else(|e| e.into_inner());
-            guard.map(|t| t.elapsed() >= self.idle_timeout).unwrap_or(false)
+            guard
+                .map(|t| t.elapsed() >= self.idle_timeout)
+                .unwrap_or(false)
         };
         if should_unload {
             self.unload();
@@ -386,7 +399,10 @@ impl CrispAsrChatPlanner {
         if is_cancelled(session_id) {
             return true;
         }
-        let guard = self.cancelled_sessions.lock().unwrap_or_else(|e| e.into_inner());
+        let guard = self
+            .cancelled_sessions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         guard.contains(session_id)
     }
 }
@@ -408,7 +424,11 @@ impl LocalPlanner for CrispAsrChatPlanner {
         }
     }
 
-    fn plan(&self, ctx: &PlannerContext, req: &PlannerRequest) -> Result<Vec<ActionEnvelope>, String> {
+    fn plan(
+        &self,
+        ctx: &PlannerContext,
+        req: &PlannerRequest,
+    ) -> Result<Vec<ActionEnvelope>, String> {
         if !self.health() {
             return Err("planner-unavailable: local planner model weights not installed".into());
         }
@@ -467,7 +487,11 @@ pub struct OpenAiCompatibleLocalPlanner {
 }
 
 impl OpenAiCompatibleLocalPlanner {
-    pub fn new(endpoint: impl Into<String>, model: impl Into<String>, persisted_allow_online: bool) -> Self {
+    pub fn new(
+        endpoint: impl Into<String>,
+        model: impl Into<String>,
+        persisted_allow_online: bool,
+    ) -> Self {
         Self {
             endpoint: endpoint.into(),
             model: model.into(),
@@ -492,7 +516,10 @@ impl OpenAiCompatibleLocalPlanner {
         if is_cancelled(session_id) {
             return true;
         }
-        let guard = self.cancelled_sessions.lock().unwrap_or_else(|e| e.into_inner());
+        let guard = self
+            .cancelled_sessions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         guard.contains(session_id)
     }
 
@@ -502,7 +529,10 @@ impl OpenAiCompatibleLocalPlanner {
         }
 
         let models_url = if self.endpoint.ends_with("/chat/completions") {
-            format!("{}/models", self.endpoint.trim_end_matches("/chat/completions"))
+            format!(
+                "{}/models",
+                self.endpoint.trim_end_matches("/chat/completions")
+            )
         } else {
             format!("{}/models", self.endpoint.trim_end_matches('/'))
         };
@@ -521,7 +551,12 @@ impl OpenAiCompatibleLocalPlanner {
         let resp = req
             .timeout(Duration::from_millis(1500))
             .send()
-            .map_err(|e| format!("could not discover models: {}", redact_error(&e.to_string())))?;
+            .map_err(|e| {
+                format!(
+                    "could not discover models: {}",
+                    redact_error(&e.to_string())
+                )
+            })?;
 
         let status = resp.status();
         if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
@@ -551,7 +586,10 @@ impl LocalPlanner for OpenAiCompatibleLocalPlanner {
         }
 
         let health_url = if self.endpoint.ends_with("/chat/completions") {
-            format!("{}/models", self.endpoint.trim_end_matches("/chat/completions"))
+            format!(
+                "{}/models",
+                self.endpoint.trim_end_matches("/chat/completions")
+            )
         } else {
             format!("{}/models", self.endpoint.trim_end_matches('/'))
         };
@@ -581,7 +619,11 @@ impl LocalPlanner for OpenAiCompatibleLocalPlanner {
     fn capabilities(&self) -> PlannerCapabilities {
         PlannerCapabilities {
             backend_id: "openai-compatible-local".into(),
-            model_id: if self.model.is_empty() { "auto".into() } else { self.model.clone() },
+            model_id: if self.model.is_empty() {
+                "auto".into()
+            } else {
+                self.model.clone()
+            },
             tier: "flexible".into(),
             max_context_tokens: MAX_CONTEXT_TOKENS,
             supports_streaming: false,
@@ -589,7 +631,11 @@ impl LocalPlanner for OpenAiCompatibleLocalPlanner {
         }
     }
 
-    fn plan(&self, ctx: &PlannerContext, req: &PlannerRequest) -> Result<Vec<ActionEnvelope>, String> {
+    fn plan(
+        &self,
+        ctx: &PlannerContext,
+        req: &PlannerRequest,
+    ) -> Result<Vec<ActionEnvelope>, String> {
         self.check_consent(req.allow_remote)?;
 
         if self.is_cancelled_internal(&req.session_id) {
@@ -608,7 +654,10 @@ impl LocalPlanner for OpenAiCompatibleLocalPlanner {
         let system_message = if budgeted_context.is_empty() {
             PLANNER_SYSTEM_INSTRUCTION.to_string()
         } else {
-            format!("{}\n\nCurrent State:\n{}", PLANNER_SYSTEM_INSTRUCTION, budgeted_context)
+            format!(
+                "{}\n\nCurrent State:\n{}",
+                PLANNER_SYSTEM_INSTRUCTION, budgeted_context
+            )
         };
 
         // Redact prompt before logging / emission
@@ -701,8 +750,11 @@ impl PlannerService {
     }
 
     /// Create new planner service with optional secret from SecretStore.
-    pub fn new_with_secret(settings: &AppSettings, secret: Option<Arc<crate::secrets::SecretBytes>>) -> Self {
-        let cache_dir = ModelManager::default_cache_dir();
+    pub fn new_with_secret(
+        settings: &AppSettings,
+        secret: Option<Arc<crate::secrets::SecretBytes>>,
+    ) -> Self {
+        let cache_dir = crate::model_manager::default_cache_dir();
         let native_model_path = cache_dir.join("spark-x2.5.gguf");
 
         let native = Arc::new(CrispAsrChatPlanner::new(
@@ -741,7 +793,11 @@ impl PlannerService {
 
     /// Returns active planner implementation based on health and preference.
     pub fn select_planner(&self) -> Option<Arc<dyn LocalPlanner>> {
-        let pref = self.preference.lock().map(|g| g.clone()).unwrap_or_else(|_| "auto".into());
+        let pref = self
+            .preference
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_else(|_| "auto".into());
 
         match pref.as_str() {
             "crispasr-chat" => {
@@ -801,7 +857,11 @@ impl PlannerService {
     }
 
     /// Plan request using active planner backend, or report planner-unavailable.
-    pub fn plan(&self, ctx: &PlannerContext, req: &PlannerRequest) -> Result<Vec<ActionEnvelope>, String> {
+    pub fn plan(
+        &self,
+        ctx: &PlannerContext,
+        req: &PlannerRequest,
+    ) -> Result<Vec<ActionEnvelope>, String> {
         let Some(active) = self.select_planner() else {
             return Err("planner-unavailable: no local model or server is running".into());
         };
@@ -930,7 +990,7 @@ mod tests {
         let req = PlannerRequest::new("s1", "open calculator", false);
         let plan_res = planner.plan(&PlannerContext::default(), &req);
         assert!(plan_res.is_err());
-        assert!(plan_res.unwrap_err().contains("online AI features are disabled"));
+        assert!(plan_res.unwrap_err().contains("remote-endpoint-prohibited"));
     }
 
     #[test]
@@ -952,14 +1012,17 @@ mod tests {
             if trimmed.is_empty() {
                 continue;
             }
-            let entry: serde_json::Value = serde_json::from_str(trimmed)
-                .expect("every corpus line must parse as valid json");
+            let entry: serde_json::Value =
+                serde_json::from_str(trimmed).expect("every corpus line must parse as valid json");
             assert!(entry.get("id").is_some());
             assert!(entry.get("input").is_some());
             assert!(entry.get("expected_tool").is_some());
             assert!(entry.get("expected_args").is_some());
             count += 1;
         }
-        assert!(count >= 30, "corpus should contain at least 30 benchmark tasks");
+        assert!(
+            count >= 30,
+            "corpus should contain at least 30 benchmark tasks"
+        );
     }
 }

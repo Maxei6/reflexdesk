@@ -21,14 +21,14 @@ happen before ReflexDesk should be called production-grade.
 | Order | Plan | Priority | Status |
 | --- | --- | --- | --- |
 | 1 | [Policy + Cancel](01_POLICY_AND_CANCEL.md) | P0.5 | NOT STARTED |
-| 2 | [Desktop Control](02_DESKTOP_CONTROL.md) | P1 | NOT STARTED |
-| 3 | [Browser Control](03_BROWSER_CONTROL.md) | P1 | NOT STARTED |
+| 2 | [Desktop Control](02_DESKTOP_CONTROL.md) | P1 | PARTIAL |
+| 3 | [Browser Control](03_BROWSER_CONTROL.md) | P1 | ACCEPTANCE PENDING |
 | 4 | [Local Planner](04_LOCAL_PLANNER.md) | P1 | NOT STARTED |
 | 5 | [Reflex / Laya](05_REFLEX_LAYA.md) | P1 | NOT STARTED |
 | 6 | [Harness Adapters](06_HARNESS_ADAPTERS.md) | P1 | NOT STARTED |
 | 7 | [Security Hardening](07_SECURITY_HARDENING.md) | P1 | NOT STARTED |
-| 8 | [Secret Storage](08_SECRET_STORAGE.md) | P1 | NOT STARTED |
-| 9 | [Process Ownership](09_PROCESS_OWNERSHIP.md) | P1 | NOT STARTED |
+| 8 | [Secret Storage](08_SECRET_STORAGE.md) | P1 | ACCEPTANCE PENDING |
+| 9 | [Process Ownership](09_PROCESS_OWNERSHIP.md) | P1 | ACCEPTANCE PENDING |
 | 10 | [Model Manager](10_MODEL_MANAGER.md) | P1 | NOT STARTED |
 | 11 | [Hardware Optimization](11_HARDWARE_OPTIMIZATION.md) | P1 | NOT STARTED |
 | 12 | [Native / Streaming STT](12_STT_NATIVE_STREAMING.md) | P2 | NOT STARTED |

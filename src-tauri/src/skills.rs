@@ -217,7 +217,10 @@ fn scan_for_forbidden_tokens(val: &serde_json::Value, path: &str) -> Result<(), 
             for (k, v) in map {
                 let k_lower = k.to_lowercase();
                 for token in FORBIDDEN_TOKENS {
-                    if k_lower == *token || k_lower.contains(&format!("_{token}")) || k_lower.contains(&format!("{token}_")) {
+                    if k_lower == *token
+                        || k_lower.contains(&format!("_{token}"))
+                        || k_lower.contains(&format!("{token}_"))
+                    {
                         return Err(format!("forbidden-field: field '{k}' at '{path}' is blocked by skill security policy"));
                     }
                 }
@@ -238,7 +241,9 @@ fn scan_for_forbidden_tokens(val: &serde_json::Value, path: &str) -> Result<(), 
                 || s_lower.starts_with("/bin/bash")
                 || s_lower.contains("curl ") && s_lower.contains("| sh")
             {
-                return Err(format!("forbidden-value: value at '{path}' contains arbitrary shell execution pattern"));
+                return Err(format!(
+                    "forbidden-value: value at '{path}' contains arbitrary shell execution pattern"
+                ));
             }
         }
         _ => {}
@@ -256,7 +261,8 @@ pub fn validate_skill_definition(val: &serde_json::Value) -> Result<SkillDefinit
     let version = val
         .get("version")
         .and_then(serde_json::Value::as_u64)
-        .ok_or_else(|| "invalid-skill: missing or invalid 'version' field".to_string())? as u32;
+        .ok_or_else(|| "invalid-skill: missing or invalid 'version' field".to_string())?
+        as u32;
 
     let canonical_val = if version == 1 {
         migrate_v1_to_v2(val)?
@@ -269,8 +275,8 @@ pub fn validate_skill_definition(val: &serde_json::Value) -> Result<SkillDefinit
     };
 
     // 3. Deserialize canonical struct
-    let skill: SkillDefinition = serde_json::from_value(canonical_val)
-        .map_err(|e| format!("invalid-skill-schema: {e}"))?;
+    let skill: SkillDefinition =
+        serde_json::from_value(canonical_val).map_err(|e| format!("invalid-skill-schema: {e}"))?;
 
     // 4. Validate ID format: lowercase alphanumeric, dashes, underscores (1..64 chars)
     if skill.id.is_empty() || skill.id.len() > 64 {
@@ -365,7 +371,9 @@ fn validate_step_args_templates(
                     }
                     cursor = actual_start + end + 2;
                 } else {
-                    return Err(format!("syntax-error: unclosed placeholder '{{{{' at '{path}'"));
+                    return Err(format!(
+                        "syntax-error: unclosed placeholder '{{{{' at '{path}'"
+                    ));
                 }
             }
         }
@@ -374,7 +382,10 @@ fn validate_step_args_templates(
     Ok(())
 }
 
-fn validate_verification_contract(contract: &VerificationContract, path: &str) -> Result<(), String> {
+fn validate_verification_contract(
+    contract: &VerificationContract,
+    path: &str,
+) -> Result<(), String> {
     let kind = contract.kind.as_str();
     if kind == "none"
         || kind == "window-focused"
@@ -447,7 +458,18 @@ pub fn migrate_v1_to_v2(v1_val: &serde_json::Value) -> Result<serde_json::Value,
         obj.insert("enabled".into(), serde_json::json!(true));
     }
 
-    // Default verification if missing
+    fn normalize_verification(value: &mut serde_json::Value) {
+        if let Some(contract) = value.as_object_mut() {
+            contract
+                .entry("selector")
+                .or_insert(serde_json::Value::Null);
+            contract.entry("expect").or_insert(serde_json::Value::Null);
+            contract
+                .entry("timeout_ms")
+                .or_insert(serde_json::json!(2000));
+        }
+    }
+
     if !obj.contains_key("verification") {
         obj.insert(
             "verification".into(),
@@ -458,6 +480,22 @@ pub fn migrate_v1_to_v2(v1_val: &serde_json::Value) -> Result<serde_json::Value,
                 "timeout_ms": 2000
             }),
         );
+    }
+    if let Some(verification) = obj.get_mut("verification") {
+        normalize_verification(verification);
+    }
+    if let Some(steps) = obj
+        .get_mut("steps")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        for step in steps {
+            if let Some(verification) = step
+                .as_object_mut()
+                .and_then(|step| step.get_mut("verification"))
+            {
+                normalize_verification(verification);
+            }
+        }
     }
 
     Ok(v2)
@@ -480,7 +518,10 @@ pub fn substitute_value(
             serde_json::Value::Object(out)
         }
         serde_json::Value::Array(arr) => {
-            let out = arr.iter().map(|item| substitute_value(item, resolved_inputs)).collect();
+            let out = arr
+                .iter()
+                .map(|item| substitute_value(item, resolved_inputs))
+                .collect();
             serde_json::Value::Array(out)
         }
         serde_json::Value::String(s) => {
@@ -520,7 +561,10 @@ pub fn resolve_inputs(
         } else if let Some(def) = &param_def.default {
             resolved.insert(param_name, def.clone());
         } else if param_def.required {
-            return Err(format!("missing-required-input: input '{param_name}' is required by skill '{}'", skill.name));
+            return Err(format!(
+                "missing-required-input: input '{param_name}' is required by skill '{}'",
+                skill.name
+            ));
         } else {
             resolved.insert(param_name, serde_json::Value::Null);
         }
@@ -673,7 +717,9 @@ pub fn execute_skill(
         for pre in &step.preconditions {
             if pre.check == "desktop_health" {
                 let health = crate::desktop::desktop_health();
-                if pre.target.as_deref() == Some("accessibility") && !health.accessibility_enabled {
+                if pre.target.as_deref() == Some("accessibility")
+                    && (!health.healthy || !health.permissions_granted)
+                {
                     return SkillExecutionResult {
                         skill_id: skill.id.clone(),
                         status: "error".into(),
@@ -782,7 +828,9 @@ pub fn execute_skill(
             }
             other_err => {
                 // Includes "error" and any unverifiable step
-                let err_msg = action_result.reason.unwrap_or_else(|| format!("step failed: {other_err}"));
+                let err_msg = action_result
+                    .reason
+                    .unwrap_or_else(|| format!("step failed: {other_err}"));
                 step_results.push(SkillStepResult {
                     step_index: idx,
                     step_id: step.id.clone(),
@@ -906,8 +954,16 @@ impl SkillRecorder {
 
     /// Compiles recorded trace into a draft SkillDefinition.
     /// Analyzes repetitive strings/values and proposes parameterized inputs.
-    pub fn compile_draft(&self, skill_id: &str, skill_name: &str) -> Result<SkillDefinition, String> {
-        let trace = self.recorded_trace.lock().map(|t| t.clone()).unwrap_or_default();
+    pub fn compile_draft(
+        &self,
+        skill_id: &str,
+        skill_name: &str,
+    ) -> Result<SkillDefinition, String> {
+        let trace = self
+            .recorded_trace
+            .lock()
+            .map(|t| t.clone())
+            .unwrap_or_default();
         if trace.is_empty() {
             return Err("recorder-empty: cannot compile skill from empty recorded trace".into());
         }
@@ -932,7 +988,10 @@ impl SkillRecorder {
                                     param_type: "string".into(),
                                     default: Some(serde_json::json!(s)),
                                     required: false,
-                                    description: Some(format!("Input for {arg_key} in step {}", idx + 1)),
+                                    description: Some(format!(
+                                        "Input for {arg_key} in step {}",
+                                        idx + 1
+                                    )),
                                 },
                             );
                             *arg_val = serde_json::json!(format!("{{{{{param_name}}}}}"));
@@ -958,7 +1017,10 @@ impl SkillRecorder {
             id: skill_id.to_string(),
             version: SKILL_SCHEMA_VERSION,
             name: skill_name.to_string(),
-            description: Some(format!("Draft skill compiled from {} recorded actions.", steps.len())),
+            description: Some(format!(
+                "Draft skill compiled from {} recorded actions.",
+                steps.len()
+            )),
             inputs: SkillInputs::Map(inputs),
             steps,
             verification: VerificationContract::default(),
@@ -1087,13 +1149,17 @@ impl SkillStore {
     }
 
     pub fn set_enabled(&self, id: &str, enabled: bool) -> Result<(), String> {
-        let mut skill = self.get(id).ok_or_else(|| format!("skill '{id}' not found"))?;
+        let mut skill = self
+            .get(id)
+            .ok_or_else(|| format!("skill '{id}' not found"))?;
         skill.enabled = enabled;
         self.save(skill)
     }
 
     pub fn set_trusted(&self, id: &str, trusted: bool) -> Result<(), String> {
-        let mut skill = self.get(id).ok_or_else(|| format!("skill '{id}' not found"))?;
+        let mut skill = self
+            .get(id)
+            .ok_or_else(|| format!("skill '{id}' not found"))?;
         skill.trust.trusted = trusted;
         self.save(skill)
     }
@@ -1125,7 +1191,8 @@ impl From<&SkillDefinition> for SkillSummary {
     }
 }
 
-static GLOBAL_RECORDER: std::sync::LazyLock<SkillRecorder> = std::sync::LazyLock::new(SkillRecorder::new);
+static GLOBAL_RECORDER: std::sync::LazyLock<SkillRecorder> =
+    std::sync::LazyLock::new(SkillRecorder::new);
 static GLOBAL_STORE: std::sync::LazyLock<SkillStore> = std::sync::LazyLock::new(|| {
     let app_dir = std::env::var("REFLEXDESK_SKILLS_DIR")
         .ok()
@@ -1147,13 +1214,15 @@ pub fn global_skill_store() -> &'static SkillStore {
 
 pub fn export_skill_bundle(id: &str) -> Result<String, String> {
     let store = global_skill_store();
-    let skill = store.get(id).ok_or_else(|| format!("skill '{id}' not found"))?;
+    let skill = store
+        .get(id)
+        .ok_or_else(|| format!("skill '{id}' not found"))?;
     serde_json::to_string_pretty(&skill).map_err(|e| e.to_string())
 }
 
 pub fn import_skill_bundle(json_str: &str, trusted: bool) -> Result<SkillDefinition, String> {
-    let val: serde_json::Value = serde_json::from_str(json_str)
-        .map_err(|e| format!("invalid-json: {e}"))?;
+    let val: serde_json::Value =
+        serde_json::from_str(json_str).map_err(|e| format!("invalid-json: {e}"))?;
     let mut skill = validate_skill_definition(&val)?;
     skill.trust.trusted = trusted;
     if !trusted {
@@ -1172,9 +1241,14 @@ pub fn import_skill_bundle(json_str: &str, trusted: bool) -> Result<SkillDefinit
 mod tests {
     use super::*;
 
-    fn dummy_executor<'a>(outcomes: &'a HashMap<&'static str, &'static str>) -> impl Fn(&ActionEnvelope) -> ActionExecutionResult + 'a {
+    fn dummy_executor<'a>(
+        outcomes: &'a HashMap<&'static str, &'static str>,
+    ) -> impl Fn(&ActionEnvelope) -> ActionExecutionResult + 'a {
         move |env: &ActionEnvelope| {
-            let status = outcomes.get(env.tool.as_str()).copied().unwrap_or("success");
+            let status = outcomes
+                .get(env.tool.as_str())
+                .copied()
+                .unwrap_or("success");
             ActionExecutionResult {
                 status: status.into(),
                 output: Some(serde_json::json!({ "executed": env.tool })),
@@ -1198,19 +1272,21 @@ mod tests {
 
     #[test]
     fn reject_shell_forbidden_fields_and_commands() {
-        let fixture_str = include_str!("../tests/fixtures/skills/reject-shell.json");
+        let fixture_str = include_str!("../../tests/fixtures/skills/reject-shell.json");
         let val: serde_json::Value = serde_json::from_str(fixture_str).unwrap();
 
         let err = validate_skill_definition(&val).unwrap_err();
         assert!(
-            err.contains("forbidden-field") || err.contains("forbidden-value") || err.contains("unknown-tool"),
+            err.contains("forbidden-field")
+                || err.contains("forbidden-value")
+                || err.contains("unknown-tool"),
             "Expected deny-list to reject shell execution, got: {err}"
         );
     }
 
     #[test]
     fn validate_and_execute_start_work_skill_without_planner() {
-        let fixture_str = include_str!("../tests/fixtures/skills/start-work.json");
+        let fixture_str = include_str!("../../tests/fixtures/skills/start-work.json");
         let val: serde_json::Value = serde_json::from_str(fixture_str).unwrap();
 
         let skill = validate_skill_definition(&val).expect("start-work skill must validate");
@@ -1234,7 +1310,7 @@ mod tests {
 
     #[test]
     fn reject_unverified_step_halts_execution_immediately() {
-        let fixture_str = include_str!("../tests/fixtures/skills/reject-unverified.json");
+        let fixture_str = include_str!("../../tests/fixtures/skills/reject-unverified.json");
         let val: serde_json::Value = serde_json::from_str(fixture_str).unwrap();
 
         // Schema validation rejects unsupported verification contracts
@@ -1309,7 +1385,7 @@ mod tests {
 
     #[test]
     fn import_trust_metadata_denies_untrusted_skill() {
-        let fixture_str = include_str!("../tests/fixtures/skills/import-trust.json");
+        let fixture_str = include_str!("../../tests/fixtures/skills/import-trust.json");
         let val: serde_json::Value = serde_json::from_str(fixture_str).unwrap();
 
         let skill = validate_skill_definition(&val).expect("import-trust skill must validate");
@@ -1326,10 +1402,11 @@ mod tests {
 
     #[test]
     fn migrate_v1_to_v2_success() {
-        let fixture_str = include_str!("../tests/fixtures/skills/migrate-v1.json");
+        let fixture_str = include_str!("../../tests/fixtures/skills/migrate-v1.json");
         let val: serde_json::Value = serde_json::from_str(fixture_str).unwrap();
 
-        let migrated = validate_skill_definition(&val).expect("v1 skill must successfully migrate to v2");
+        let migrated =
+            validate_skill_definition(&val).expect("v1 skill must successfully migrate to v2");
         assert_eq!(migrated.version, 2);
         assert_eq!(migrated.steps.len(), 1);
         assert_eq!(migrated.steps[0].tool, "app.open");
@@ -1345,19 +1422,17 @@ mod tests {
             name: "Cancel Test".into(),
             description: None,
             inputs: SkillInputs::Map(HashMap::new()),
-            steps: vec![
-                SkillStep {
-                    id: Some("step-1".into()),
-                    tool: "browser.search".into(),
-                    args: serde_json::json!({ "query": "test" }),
-                    source: ActionSource::User,
-                    risk: RiskClass::Safe,
-                    capability: "browser.open".into(),
-                    verification: VerificationContract::default(),
-                    preconditions: vec![],
-                    timeout_ms: None,
-                },
-            ],
+            steps: vec![SkillStep {
+                id: Some("step-1".into()),
+                tool: "browser.search".into(),
+                args: serde_json::json!({ "query": "test" }),
+                source: ActionSource::User,
+                risk: RiskClass::Safe,
+                capability: "browser.open".into(),
+                verification: VerificationContract::default(),
+                preconditions: vec![],
+                timeout_ms: None,
+            }],
             verification: VerificationContract::default(),
             timeout_ms: 10000,
             cancel: CancelPolicy::default(),
@@ -1405,7 +1480,9 @@ mod tests {
         };
 
         recorder.record_action(&envelope, &result);
-        let draft = recorder.compile_draft("open-reflexdesk", "Open ReflexDesk Web").unwrap();
+        let draft = recorder
+            .compile_draft("open-reflexdesk", "Open ReflexDesk Web")
+            .unwrap();
 
         assert_eq!(draft.id, "open-reflexdesk");
         assert_eq!(draft.steps.len(), 1);

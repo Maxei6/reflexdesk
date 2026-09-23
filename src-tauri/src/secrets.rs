@@ -5,17 +5,19 @@
 //! - [`SecretRef`] opaque references stored in normal application settings.
 //! - [`SecretMetadata`] containing timestamps and provider IDs without credentials.
 //! - [`SecretBytes`] memory-zeroizing sensitive buffer that overwrites itself on Drop.
-//! - [`OsVaultSecretStore`] secure local vault with restricted filesystem permissions.
+//! - [`OsVaultSecretStore`] backed by the platform credential service; filesystem metadata contains no secret bytes.
 //! - Plaintext secret detection and quarantine guard for settings files.
 //! - Provider connection status, key rotation, and sanitized `auth-invalid` error mapping.
 //! - Harness process environment scrubbing to prevent leaking secrets to children.
 
+use keyring::Entry;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use zeroize::Zeroizing;
 
 /// Opaque reference to a secret stored in a [`SecretStore`].
 ///
@@ -57,26 +59,23 @@ pub struct ProviderConnectionStatus {
 }
 
 /// Memory-zeroizing buffer for sensitive secret material.
-///
-/// Overwrites contents with volatile zero writes when dropped to prevent
-/// secret retention in memory pages or heap garbage.
-pub struct SecretBytes(Vec<u8>);
+pub struct SecretBytes(Zeroizing<Vec<u8>>);
 
 impl SecretBytes {
     pub fn new(data: Vec<u8>) -> Self {
-        Self(data)
+        Self(Zeroizing::new(data))
     }
 
     pub fn from_slice(slice: &[u8]) -> Self {
-        Self(slice.to_vec())
+        Self(Zeroizing::new(slice.to_vec()))
     }
 
     pub fn expose_bytes(&self) -> &[u8] {
-        &self.0
+        self.0.as_slice()
     }
 
     pub fn expose_str(&self) -> Result<&str, std::str::Utf8Error> {
-        std::str::from_utf8(&self.0)
+        std::str::from_utf8(self.0.as_slice())
     }
 
     pub fn len(&self) -> usize {
@@ -85,17 +84,6 @@ impl SecretBytes {
 
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
-    }
-}
-
-impl Drop for SecretBytes {
-    fn drop(&mut self) {
-        for b in self.0.iter_mut() {
-            unsafe {
-                std::ptr::write_volatile(b, 0);
-            }
-        }
-        std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
     }
 }
 
@@ -143,22 +131,13 @@ fn generate_secret_id() -> String {
     format!("sec_{:016x}", u64::from_le_bytes(bytes))
 }
 
-/// Secure filesystem-backed secret vault.
+const KEYRING_SERVICE_PREFIX: &str = "com.reflexdesk.credentials";
+
+/// OS credential-store backed secret vault.
 ///
-/// Secrets are stored in individual binary files with restricted permissions
-/// in an application vault directory separate from settings.
-///
-/// Design choice documentation:
-/// We implement an OS Vault store with strict per-user filesystem permissions
-/// (0o700 for directories, 0o600 for secret files on Unix; user profile ACL on Windows)
-/// rather than Tauri Stronghold with a mandatory user password prompt or external
-/// system C-libraries (such as libsecret on Linux).
-///
-/// Key advantages:
-/// 1. Zero external C-library runtime dependencies on Linux (runs reliably in headless CI and desktop).
-/// 2. Deterministic atomic key rotation and metadata tracking.
-/// 3. Zero master-password friction for local voice desktop UX while keeping plaintext secrets
-///    strictly absent from `settings.json`, `localStorage`, logs, and diagnostics.
+/// Raw values are stored only by Windows Credential Manager, macOS Keychain,
+/// or Linux Secret Service. The app directory contains allowlisted metadata
+/// only. Backend unavailability fails closed; there is no plaintext fallback.
 pub struct OsVaultSecretStore {
     vault_dir: PathBuf,
     metadata_lock: Mutex<()>,
@@ -167,22 +146,33 @@ pub struct OsVaultSecretStore {
 impl OsVaultSecretStore {
     pub fn new<P: AsRef<Path>>(vault_dir: P) -> Result<Self, String> {
         let dir = vault_dir.as_ref().to_path_buf();
-        fs::create_dir_all(&dir).map_err(|e| format!("failed to create vault dir: {e}"))?;
-
+        fs::create_dir_all(&dir)
+            .map_err(|e| format!("failed to create vault metadata dir: {e}"))?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o700));
+            fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))
+                .map_err(|e| format!("failed to secure vault metadata dir: {e}"))?;
         }
 
-        let secrets_dir = dir.join("secrets");
-        fs::create_dir_all(&secrets_dir)
-            .map_err(|e| format!("failed to create secrets dir: {e}"))?;
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = fs::set_permissions(&secrets_dir, fs::Permissions::from_mode(0o700));
+        let insecure_dir = dir.join("secrets");
+        if insecure_dir.exists() {
+            let has_payloads = fs::read_dir(&insecure_dir)
+                .map(|entries| {
+                    entries
+                        .filter_map(Result::ok)
+                        .any(|entry| entry.path().is_file())
+                })
+                .unwrap_or(true);
+            if has_payloads {
+                // Never import raw bytes automatically. Quarantine the legacy
+                // directory so the app can boot and ask the user to reconnect.
+                let quarantine = dir.join(format!("insecure-secrets-quarantine-{}", now_ts()));
+                fs::rename(&insecure_dir, quarantine)
+                    .map_err(|_| "insecure-secret-quarantine-failed".to_string())?;
+            } else {
+                let _ = fs::remove_dir(&insecure_dir);
+            }
         }
 
         Ok(Self {
@@ -195,8 +185,20 @@ impl OsVaultSecretStore {
         self.vault_dir.join("metadata.json")
     }
 
-    fn secret_path(&self, id: &str) -> PathBuf {
-        self.vault_dir.join("secrets").join(format!("{id}.bin"))
+    fn service_name(provider: &str) -> String {
+        let normalized: String = provider
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+            .collect();
+        format!(
+            "{KEYRING_SERVICE_PREFIX}.{}",
+            normalized.to_ascii_lowercase()
+        )
+    }
+
+    fn entry(provider: &str, id: &str) -> Result<Entry, String> {
+        Entry::new(&Self::service_name(provider), id)
+            .map_err(|e| format!("credential-store-unavailable: {e}"))
     }
 
     fn read_metadata_map(&self) -> HashMap<String, SecretMetadata> {
@@ -214,23 +216,21 @@ impl OsVaultSecretStore {
         let path = self.metadata_path();
         let temp = path.with_extension("json.tmp");
         let payload = serde_json::to_vec_pretty(map)
-            .map_err(|e| format!("failed to serialize metadata: {e}"))?;
-
-        fs::write(&temp, payload).map_err(|e| format!("failed to write metadata tmp: {e}"))?;
-
+            .map_err(|e| format!("failed to serialize credential metadata: {e}"))?;
+        fs::write(&temp, payload)
+            .map_err(|e| format!("failed to write credential metadata: {e}"))?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let _ = fs::set_permissions(&temp, fs::Permissions::from_mode(0o600));
+            fs::set_permissions(&temp, fs::Permissions::from_mode(0o600))
+                .map_err(|e| format!("failed to secure credential metadata: {e}"))?;
         }
-
         #[cfg(target_os = "windows")]
         if path.exists() {
-            let _ = fs::remove_file(&path);
+            fs::remove_file(&path)
+                .map_err(|e| format!("failed to replace credential metadata: {e}"))?;
         }
-
-        fs::rename(&temp, &path).map_err(|e| format!("failed to commit metadata: {e}"))?;
-        Ok(())
+        fs::rename(&temp, &path).map_err(|e| format!("failed to commit credential metadata: {e}"))
     }
 }
 
@@ -242,60 +242,39 @@ impl SecretStore for OsVaultSecretStore {
         if secret.is_empty() {
             return Err("secret cannot be empty".into());
         }
-
         let _guard = self
             .metadata_lock
             .lock()
-            .map_err(|_| "metadata lock poisoned".to_string())?;
-
+            .map_err(|_| "credential metadata lock poisoned".to_string())?;
         let mut map = self.read_metadata_map();
-
-        // Check if there is an existing secret for this provider (key rotation)
-        let existing_id = map
-            .values()
-            .find(|m| m.provider == provider)
-            .map(|m| m.id.clone());
-
+        let existing = map.values().find(|m| m.provider == provider).cloned();
         let id = generate_secret_id();
-        let secret_file = self.secret_path(&id);
-        let temp_file = secret_file.with_extension("bin.tmp");
-
-        fs::write(&temp_file, secret)
-            .map_err(|e| format!("failed to write secret file tmp: {e}"))?;
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = fs::set_permissions(&temp_file, fs::Permissions::from_mode(0o600));
-        }
-
-        fs::rename(&temp_file, &secret_file)
-            .map_err(|e| format!("failed to commit secret file: {e}"))?;
+        let entry = Self::entry(provider, &id)?;
+        entry
+            .set_secret(secret)
+            .map_err(|e| format!("credential-store-write-failed: {e}"))?;
 
         let now = now_ts();
         let metadata = SecretMetadata {
             provider: provider.to_string(),
             id: id.clone(),
-            created_at_ts: existing_id
-                .as_ref()
-                .and_then(|old_id| map.get(old_id).map(|m| m.created_at_ts))
-                .unwrap_or(now),
+            created_at_ts: existing.as_ref().map(|m| m.created_at_ts).unwrap_or(now),
             updated_at_ts: now,
             last_used_ts: None,
         };
-
-        // Remove old secret file if rotating
-        if let Some(old_id) = existing_id {
-            map.remove(&old_id);
-            let old_file = self.secret_path(&old_id);
-            if old_file.exists() {
-                let _ = fs::remove_file(&old_file);
+        if let Some(old) = existing.as_ref() {
+            map.remove(&old.id);
+        }
+        map.insert(id.clone(), metadata);
+        if let Err(error) = self.write_metadata_map(&map) {
+            let _ = entry.delete_credential();
+            return Err(error);
+        }
+        if let Some(old) = existing {
+            if let Ok(old_entry) = Self::entry(&old.provider, &old.id) {
+                let _ = old_entry.delete_credential();
             }
         }
-
-        map.insert(id.clone(), metadata);
-        self.write_metadata_map(&map)?;
-
         Ok(SecretRef {
             provider: provider.to_string(),
             id,
@@ -306,60 +285,49 @@ impl SecretStore for OsVaultSecretStore {
         let _guard = self
             .metadata_lock
             .lock()
-            .map_err(|_| "metadata lock poisoned".to_string())?;
-
+            .map_err(|_| "credential metadata lock poisoned".to_string())?;
         let mut map = self.read_metadata_map();
         let metadata = map
             .get_mut(&secret_ref.id)
-            .ok_or_else(|| "secret not found in vault".to_string())?;
-
+            .ok_or_else(|| "credential-not-found".to_string())?;
         if metadata.provider != secret_ref.provider {
-            return Err("secret provider mismatch".to_string());
+            return Err("credential-provider-mismatch".into());
         }
-
-        let path = self.secret_path(&secret_ref.id);
-        if !path.exists() {
-            return Err("secret payload file missing from vault".to_string());
-        }
-
-        let bytes = fs::read(&path).map_err(|e| format!("failed to read secret payload: {e}"))?;
-
-        // Update last_used_ts
+        let decoded = Self::entry(&secret_ref.provider, &secret_ref.id)?
+            .get_secret()
+            .map_err(|e| format!("credential-store-read-failed: {e}"))?;
         metadata.last_used_ts = Some(now_ts());
-        let _ = self.write_metadata_map(&map);
-
-        Ok(SecretBytes::new(bytes))
+        self.write_metadata_map(&map)?;
+        Ok(SecretBytes::new(decoded))
     }
 
     fn delete(&self, secret_ref: &SecretRef) -> Result<(), String> {
         let _guard = self
             .metadata_lock
             .lock()
-            .map_err(|_| "metadata lock poisoned".to_string())?;
-
+            .map_err(|_| "credential metadata lock poisoned".to_string())?;
         let mut map = self.read_metadata_map();
-        if let Some(metadata) = map.remove(&secret_ref.id) {
-            if metadata.provider != secret_ref.provider {
-                map.insert(secret_ref.id.clone(), metadata);
-                return Err("secret provider mismatch".to_string());
-            }
-            let path = self.secret_path(&secret_ref.id);
-            if path.exists() {
-                let _ = fs::remove_file(path);
-            }
-            self.write_metadata_map(&map)?;
+        let Some(metadata) = map.get(&secret_ref.id) else {
+            return Ok(());
+        };
+        if metadata.provider != secret_ref.provider {
+            return Err("credential-provider-mismatch".into());
         }
-        Ok(())
+        let entry = Self::entry(&secret_ref.provider, &secret_ref.id)?;
+        match entry.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => {}
+            Err(error) => return Err(format!("credential-store-delete-failed: {error}")),
+        }
+        map.remove(&secret_ref.id);
+        self.write_metadata_map(&map)
     }
 
     fn list_metadata(&self) -> Result<Vec<SecretMetadata>, String> {
         let _guard = self
             .metadata_lock
             .lock()
-            .map_err(|_| "metadata lock poisoned".to_string())?;
-
-        let map = self.read_metadata_map();
-        let mut list: Vec<SecretMetadata> = map.into_values().collect();
+            .map_err(|_| "credential metadata lock poisoned".to_string())?;
+        let mut list: Vec<_> = self.read_metadata_map().into_values().collect();
         list.sort_by(|a, b| a.created_at_ts.cmp(&b.created_at_ts));
         Ok(list)
     }
@@ -643,7 +611,10 @@ pub fn test_provider_connection(
                 secret_id: None,
                 updated_at_ts: Some(now_ts()),
                 last_status: "unreachable".into(),
-                message: format!("HTTP client initialization failed: {}", crate::redaction::redact_error(&e.to_string())),
+                message: format!(
+                    "HTTP client initialization failed: {}",
+                    crate::redaction::redact_error(&e.to_string())
+                ),
             };
         }
     };
@@ -671,7 +642,10 @@ pub fn test_provider_connection(
                 secret_id: None,
                 updated_at_ts: Some(now_ts()),
                 last_status: "unreachable".into(),
-                message: format!("Connection failed: {}", crate::redaction::redact_error(&e.to_string())),
+                message: format!(
+                    "Connection failed: {}",
+                    crate::redaction::redact_error(&e.to_string())
+                ),
             };
         }
     };
@@ -716,15 +690,36 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_secret_bytes_zeroize() {
-        let mut ptr = std::ptr::null_mut();
-        {
-            let bytes = SecretBytes::new(vec![1, 2, 3, 4, 5]);
-            assert_eq!(bytes.len(), 5);
-            assert_eq!(bytes.expose_bytes(), &[1, 2, 3, 4, 5]);
-            assert_eq!(format!("{bytes:?}"), "SecretBytes([REDACTED; 5 bytes])");
-            assert_eq!(format!("{bytes}"), "[REDACTED_SECRET]");
-        }
+    fn test_secret_bytes_redacts_debug_and_display() {
+        let bytes = SecretBytes::new(vec![1, 2, 3, 4, 5]);
+        assert_eq!(bytes.len(), 5);
+        assert_eq!(bytes.expose_bytes(), &[1, 2, 3, 4, 5]);
+        assert_eq!(format!("{bytes:?}"), "SecretBytes([REDACTED; 5 bytes])");
+        assert_eq!(format!("{bytes}"), "[REDACTED_SECRET]");
+    }
+
+    #[test]
+    fn test_legacy_plaintext_directory_is_quarantined_without_import() {
+        let temp_dir = std::env::temp_dir().join(format!("rd_test_vault_{}", generate_secret_id()));
+        let legacy_dir = temp_dir.join("secrets");
+        fs::create_dir_all(&legacy_dir).unwrap();
+        fs::write(legacy_dir.join("legacy.bin"), b"plaintext-secret").unwrap();
+
+        let store = OsVaultSecretStore::new(&temp_dir).unwrap();
+
+        assert!(!legacy_dir.exists());
+        assert!(store.list_metadata().unwrap().is_empty());
+        let quarantined = fs::read_dir(&temp_dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("insecure-secrets-quarantine-")
+            });
+        assert!(quarantined);
+        let _ = fs::remove_dir_all(&temp_dir);
     }
 
     #[test]
@@ -765,6 +760,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires an interactive OS credential service; exercised by platform integration CI"]
     fn test_os_vault_store_lifecycle() {
         let temp_dir = std::env::temp_dir().join(format!("rd_test_vault_{}", generate_secret_id()));
         let store = OsVaultSecretStore::new(&temp_dir).unwrap();
@@ -782,7 +778,10 @@ mod tests {
 
         // Rotate
         let sref2 = store.set("openai", b"sk-proj-new-key").unwrap();
-        assert_eq!(store.get(&sref2).unwrap().expose_bytes(), b"sk-proj-new-key");
+        assert_eq!(
+            store.get(&sref2).unwrap().expose_bytes(),
+            b"sk-proj-new-key"
+        );
         assert!(store.get(&sref).is_err());
 
         // Delete
@@ -800,7 +799,10 @@ mod tests {
             "language": "en",
             "api_key": "sk-secret-12345"
         });
-        assert_eq!(detect_plaintext_secret_key(&json_with_key), Some("api_key".into()));
+        assert_eq!(
+            detect_plaintext_secret_key(&json_with_key),
+            Some("api_key".into())
+        );
 
         // Nested token must be detected
         let json_nested: serde_json::Value = serde_json::json!({
@@ -810,13 +812,19 @@ mod tests {
                 }
             }
         });
-        assert_eq!(detect_plaintext_secret_key(&json_nested), Some("token".into()));
+        assert_eq!(
+            detect_plaintext_secret_key(&json_nested),
+            Some("token".into())
+        );
 
         // Password must be detected
         let json_pass: serde_json::Value = serde_json::json!({
             "password": "super-secret-password"
         });
-        assert_eq!(detect_plaintext_secret_key(&json_pass), Some("password".into()));
+        assert_eq!(
+            detect_plaintext_secret_key(&json_pass),
+            Some("password".into())
+        );
 
         // Opaque reference shape (planner_secret_ref) MUST NOT be flagged
         let json_valid_ref: serde_json::Value = serde_json::json!({

@@ -41,14 +41,14 @@ pub struct SttStatus {
     pub active_backend: String,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Transcript {
     pub text: String,
     pub provider: &'static str,
     pub latency_ms: u128,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct StreamChunkResult {
     pub session_id: String,
     pub partial_text: Option<String>,
@@ -172,12 +172,7 @@ impl SttBackend for HttpSttBackend {
             .timeout(Duration::from_millis(350))
             .build()
             .ok()
-            .and_then(|client| {
-                client
-                    .get(endpoint_url(&endpoint, "/health"))
-                    .send()
-                    .ok()
-            })
+            .and_then(|client| client.get(endpoint_url(&endpoint, "/health")).send().ok())
             .filter(|response| response.status().is_success())
             .and_then(|response| response.json::<serde_json::Value>().ok())
             .and_then(|payload| {
@@ -332,7 +327,9 @@ impl SttBackend for HttpSttBackend {
             }
         }
 
-        let endpoint = self.endpoint_snapshot().ok_or("local speech endpoint is unavailable")?;
+        let endpoint = self
+            .endpoint_snapshot()
+            .ok_or("local speech endpoint is unavailable")?;
         let started = Instant::now();
         let wav = wav_bytes(samples, sample_rate);
 
@@ -361,7 +358,10 @@ impl SttBackend for HttpSttBackend {
             .map_err(|e| format!("local speech request failed: {e}"))?;
 
         if !response.status().is_success() {
-            return Err(format!("local speech engine returned HTTP {}", response.status()));
+            return Err(format!(
+                "local speech engine returned HTTP {}",
+                response.status()
+            ));
         }
 
         let payload = response
@@ -552,7 +552,9 @@ fn runtime_candidates(app: &AppHandle) -> Vec<PathBuf> {
 }
 
 fn runtime_path(app: &AppHandle) -> Option<PathBuf> {
-    runtime_candidates(app).into_iter().find(|path| path.is_file())
+    runtime_candidates(app)
+        .into_iter()
+        .find(|path| path.is_file())
 }
 
 fn endpoint_url(endpoint: &LocalEndpoint, path: &str) -> String {
@@ -773,9 +775,10 @@ pub fn stream_chunk(
             accumulated
         };
 
-        let transcript = state
-            .http
-            .transcribe_final(app, &samples_to_transcribe, sample_rate, &language)?;
+        let transcript =
+            state
+                .http
+                .transcribe_final(app, &samples_to_transcribe, sample_rate, &language)?;
 
         state.tracker.record_latency(transcript.latency_ms as u64);
 
@@ -805,11 +808,7 @@ pub fn stream_chunk(
 }
 
 /// Cancel and reset in-flight streaming session state (e.g. on mic disconnect or stop).
-pub fn cancel_stream(
-    app: &AppHandle,
-    state: &SttState,
-    session_id: &str,
-) -> Result<(), String> {
+pub fn cancel_stream(app: &AppHandle, state: &SttState, session_id: &str) -> Result<(), String> {
     if let Ok(mut guard) = state.sessions.lock() {
         guard.remove(session_id);
     }

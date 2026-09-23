@@ -74,20 +74,11 @@ pub fn redact_text(text: &str) -> Cow<'_, str> {
 /// Redact a URL to scheme + host only. Strips userinfo, path, query, fragment
 /// (all common exfiltration / session-token carriers).
 pub fn redact_url(url: &str) -> String {
-    let without_scheme = match url.split_once("://") {
-        Some((scheme, rest)) => {
-            let host = rest
-                .split(['/', '?', '#', '@'])
-                .last()
-                .unwrap_or(rest);
-            // If there was userinfo, `split('@')` above kept only the tail;
-            // host is the last segment which is correct for host-only output.
-            return format!("{scheme}://{host}");
+    if let Ok(parsed) = url::Url::parse(url) {
+        if let Some(host) = parsed.host_str() {
+            return format!("{}://{}", parsed.scheme(), host);
         }
-        None => url,
-    };
-    let _ = without_scheme;
-    // No scheme: return host up to first delimiter.
+    }
     url.split(['/', '?', '#', ' '])
         .next()
         .unwrap_or("[redacted-url]")

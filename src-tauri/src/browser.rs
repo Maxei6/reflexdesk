@@ -8,8 +8,14 @@ use crate::policy::VerificationContract;
 use crate::security;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::HashMap;
-use std::sync::{LazyLock, Mutex};
+use std::collections::{HashMap, HashSet};
+use std::net::{TcpListener, TcpStream};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    LazyLock, Mutex,
+};
+use std::time::Duration;
+use tungstenite::{accept, Message, WebSocket};
 
 pub const DEFAULT_BRIDGE_PORT: u16 = 8788;
 pub const PAIRING_HEADER_NAME: &str = "X-ReflexDesk-Pairing";
@@ -151,20 +157,39 @@ pub struct BrowserStatus {
 // Pairing Secret & Bridge Security
 // ---------------------------------------------------------------------------
 
-static PAIRING_SECRET: LazyLock<Mutex<String>> = LazyLock::new(|| {
-    let secret: String = (0..32)
-        .map(|_| {
-            let byte: u8 = rand::random();
-            format!("{:02x}", byte)
-        })
-        .collect::<Vec<_>>()
-        .concat()[..32]
-        .to_string();
-    Mutex::new(secret)
-});
+static PAIRING_SECRET: LazyLock<Mutex<String>> = LazyLock::new(|| Mutex::new(String::new()));
 
 fn get_pairing_store() -> &'static Mutex<String> {
     &PAIRING_SECRET
+}
+
+pub fn initialize_pairing_secret() -> Result<(), String> {
+    const SERVICE: &str = "com.reflexdesk.browser";
+    const USER: &str = "extension-pairing";
+    let entry = keyring::Entry::new(SERVICE, USER)
+        .map_err(|e| format!("browser-pairing-store-unavailable: {e}"))?;
+    let secret = match entry.get_password() {
+        Ok(secret) if secret.len() == 32 && secret.chars().all(|c| c.is_ascii_hexdigit()) => secret,
+        Ok(_) | Err(keyring::Error::NoEntry) => {
+            use rand::RngCore;
+            let mut bytes = [0u8; 16];
+            rand::rng().fill_bytes(&mut bytes);
+            let generated = bytes
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            entry
+                .set_password(&generated)
+                .map_err(|e| format!("browser-pairing-store-write-failed: {e}"))?;
+            generated
+        }
+        Err(error) => return Err(format!("browser-pairing-store-read-failed: {error}")),
+    };
+    let mut guard = get_pairing_store()
+        .lock()
+        .map_err(|_| "browser pairing lock poisoned".to_string())?;
+    *guard = secret;
+    Ok(())
 }
 /// Retrieve the active per-install pairing secret.
 pub fn get_pairing_secret() -> String {
@@ -174,9 +199,12 @@ pub fn get_pairing_secret() -> String {
         .clone()
 }
 
-/// Rotate or explicitly set pairing secret.
+/// Test-only pairing override.
+#[cfg(test)]
 pub fn set_pairing_secret(secret: &str) {
-    let mut guard = get_pairing_store().lock().unwrap_or_else(|p| p.into_inner());
+    let mut guard = get_pairing_store()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     *guard = secret.to_string();
 }
 
@@ -191,6 +219,194 @@ pub fn verify_pairing_token(token: &str) -> bool {
         .zip(current.bytes())
         .fold(0, |acc, (a, b)| acc | (a ^ b))
         == 0
+}
+
+static BRIDGE_SOCKET: LazyLock<Mutex<Option<WebSocket<TcpStream>>>> =
+    LazyLock::new(|| Mutex::new(None));
+static BRIDGE_STARTED: AtomicBool = AtomicBool::new(false);
+static SEEN_NONCES: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
+
+fn bridge_nonce() -> String {
+    use rand::RngCore;
+    let mut bytes = [0u8; 16];
+    rand::rng().fill_bytes(&mut bytes);
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn record_bridge_error(error: &str) {
+    let mut state = get_browser_state()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    state.extension_connected = false;
+    state.last_error = Some(crate::redaction::redact_error(error));
+}
+
+/// Starts the authenticated browser-extension bridge on loopback only.
+pub fn start_bridge() -> Result<(), String> {
+    if get_pairing_secret().is_empty() {
+        let error = "browser-pairing-unavailable: credential-store initialization failed";
+        record_bridge_error(error);
+        return Err(error.into());
+    }
+    if BRIDGE_STARTED
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return Ok(());
+    }
+    let listener = match TcpListener::bind(("127.0.0.1", DEFAULT_BRIDGE_PORT)) {
+        Ok(listener) => listener,
+        Err(error) => {
+            BRIDGE_STARTED.store(false, Ordering::SeqCst);
+            let message = format!("browser-bridge-bind-failed: {error}");
+            record_bridge_error(&message);
+            return Err(message);
+        }
+    };
+    std::thread::Builder::new()
+        .name("reflexdesk-browser-bridge".into())
+        .spawn(move || {
+            for incoming in listener.incoming() {
+                let Ok(stream) = incoming else {
+                    continue;
+                };
+                let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
+                let _ = stream.set_write_timeout(Some(Duration::from_secs(10)));
+                let Ok(mut socket) = accept(stream) else {
+                    continue;
+                };
+                let authenticated = socket
+                    .read()
+                    .ok()
+                    .and_then(|message| message.into_text().ok())
+                    .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+                    .map(|handshake| {
+                        handshake.get("type").and_then(Value::as_str) == Some("handshake")
+                            && handshake.get("v").and_then(Value::as_u64) == Some(1)
+                            && handshake
+                                .get("pairing")
+                                .and_then(Value::as_str)
+                                .map(verify_pairing_token)
+                                .unwrap_or(false)
+                    })
+                    .unwrap_or(false);
+                if !authenticated {
+                    let _ = socket.close(None);
+                    continue;
+                }
+                if let Ok(mut current) = BRIDGE_SOCKET.lock() {
+                    if let Some(mut previous) = current.take() {
+                        let _ = previous.close(None);
+                    }
+                    *current = Some(socket);
+                }
+                let mut state = get_browser_state()
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner());
+                state.extension_connected = true;
+                state.last_error = None;
+            }
+        })
+        .map_err(|e| {
+            BRIDGE_STARTED.store(false, Ordering::SeqCst);
+            format!("browser-bridge-thread-failed: {e}")
+        })?;
+    Ok(())
+}
+
+fn bridge_call(action: &str, args: Value, tab_id: Option<u32>) -> Result<Value, String> {
+    const MAX_MESSAGE_BYTES: usize = 2 * 1024 * 1024;
+    let session = bridge_nonce();
+    let nonce = bridge_nonce();
+    {
+        let mut seen = SEEN_NONCES
+            .lock()
+            .map_err(|_| "browser nonce lock poisoned")?;
+        if seen.len() >= 4096 {
+            seen.clear();
+        }
+        if !seen.insert(nonce.clone()) {
+            return Err("browser-bridge-nonce-collision".into());
+        }
+    }
+    let pairing = get_pairing_secret();
+    let request = json!({
+        "v": 1,
+        "session": session,
+        "pairing": pairing,
+        "tabId": tab_id,
+        "action": action,
+        "args": args,
+        "nonce": nonce,
+    });
+    let encoded = serde_json::to_string(&request).map_err(|e| e.to_string())?;
+    if encoded.len() > MAX_MESSAGE_BYTES {
+        return Err("browser-bridge-request-too-large".into());
+    }
+
+    let result = (|| {
+        let mut guard = BRIDGE_SOCKET
+            .lock()
+            .map_err(|_| "browser bridge socket lock poisoned".to_string())?;
+        let socket = guard.as_mut().ok_or_else(|| {
+            "bridge-unavailable: authenticated browser extension is not connected".to_string()
+        })?;
+        socket
+            .send(Message::Text(encoded.into()))
+            .map_err(|e| format!("browser-bridge-send-failed: {e}"))?;
+        let response_text = socket
+            .read()
+            .map_err(|e| format!("browser-bridge-timeout-or-disconnect: {e}"))?
+            .into_text()
+            .map_err(|_| "browser-bridge-invalid-response-type".to_string())?;
+        if response_text.len() > MAX_MESSAGE_BYTES {
+            return Err("browser-bridge-response-too-large".into());
+        }
+        let response: Value = serde_json::from_str(&response_text)
+            .map_err(|e| format!("browser-bridge-invalid-json: {e}"))?;
+        if response.get("v").and_then(Value::as_u64) != Some(1)
+            || response.get("session").and_then(Value::as_str) != Some(session.as_str())
+            || response.get("nonce").and_then(Value::as_str) != Some(nonce.as_str())
+            || response.get("pairing").and_then(Value::as_str) != Some(pairing.as_str())
+        {
+            return Err("browser-bridge-auth-or-correlation-failed".into());
+        }
+        if !response
+            .get("success")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            let code = response
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("action-failed");
+            return Err(format!("browser-{code}"));
+        }
+        Ok(response.get("data").cloned().unwrap_or(response))
+    })();
+    if let Ok(mut seen) = SEEN_NONCES.lock() {
+        seen.remove(&nonce);
+    }
+    if let Err(error) = &result {
+        let transport_or_protocol_failure = error.contains("timeout")
+            || error.contains("disconnect")
+            || error.contains("send-failed")
+            || error.contains("invalid-response")
+            || error.contains("invalid-json")
+            || error.contains("response-too-large")
+            || error.contains("auth-or-correlation");
+        if transport_or_protocol_failure {
+            if let Ok(mut socket) = BRIDGE_SOCKET.lock() {
+                *socket = None;
+            }
+            let mut state = get_browser_state()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            state.extension_connected = false;
+            state.last_error = Some(crate::redaction::redact_error(error));
+        }
+    }
+    result
 }
 
 // ---------------------------------------------------------------------------
@@ -226,24 +442,22 @@ fn get_browser_state() -> &'static Mutex<BrowserState> {
 
 // ---------------------------------------------------------------------------
 // Deterministic Health Check
-// ---------------------------------------------------------------------------
-
-/// Deterministic health check for browser subsystem.
 pub fn health() -> bool {
-    let state = match get_browser_state().lock() {
-        Ok(s) => s,
-        Err(_) => return false,
-    };
-    // Healthy if state mutex is accessible and no fatal bridge errors
-    state.last_error.is_none()
+    BRIDGE_STARTED.load(Ordering::SeqCst)
+        && BRIDGE_SOCKET
+            .lock()
+            .map(|socket| socket.is_some())
+            .unwrap_or(false)
 }
 
 /// Get detailed browser subsystem status.
 pub fn get_status() -> BrowserStatus {
-    let state = get_browser_state().lock().unwrap_or_else(|p| p.into_inner());
+    let state = get_browser_state()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     BrowserStatus {
-        healthy: state.last_error.is_none(),
-        extension_connected: state.extension_connected,
+        healthy: health(),
+        extension_connected: health(),
         pairing_configured: !get_pairing_secret().is_empty(),
         bridge_port: DEFAULT_BRIDGE_PORT,
         last_error: state.last_error.clone(),
@@ -251,15 +465,11 @@ pub fn get_status() -> BrowserStatus {
     }
 }
 
-/// Set simulated extension connected state (for tests and local harness).
-pub fn set_extension_connected(connected: bool) {
-    let mut state = get_browser_state().lock().unwrap_or_else(|p| p.into_inner());
-    state.extension_connected = connected;
-}
-
-/// Set simulated active tab and snapshot (for tests and bridge synchronization).
+/// Cache the latest authenticated bridge snapshot for policy-sensitive checks.
 pub fn update_tab_snapshot(tab: BrowserTab, snapshot: BrowserSnapshot) {
-    let mut state = get_browser_state().lock().unwrap_or_else(|p| p.into_inner());
+    let mut state = get_browser_state()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     state.active_tab_id = Some(tab.id);
     if let Some(pos) = state.tabs.iter().position(|t| t.id == tab.id) {
         state.tabs[pos] = tab.clone();
@@ -287,14 +497,22 @@ pub fn redact_snapshot_for_planner(snapshot: &mut BrowserSnapshot) {
                     .as_deref()
                     .map(|r| r.eq_ignore_ascii_case("password"))
                     .unwrap_or(false)
-            || el.name.as_deref().map(|n| {
-                let n_low = n.to_lowercase();
-                SENSITIVE_KEYWORDS.iter().any(|k| n_low.contains(k))
-            }).unwrap_or(false)
-            || el.placeholder.as_deref().map(|p| {
-                let p_low = p.to_lowercase();
-                SENSITIVE_KEYWORDS.iter().any(|k| p_low.contains(k))
-            }).unwrap_or(false);
+            || el
+                .name
+                .as_deref()
+                .map(|n| {
+                    let n_low = n.to_lowercase();
+                    SENSITIVE_KEYWORDS.iter().any(|k| n_low.contains(k))
+                })
+                .unwrap_or(false)
+            || el
+                .placeholder
+                .as_deref()
+                .map(|p| {
+                    let p_low = p.to_lowercase();
+                    SENSITIVE_KEYWORDS.iter().any(|k| p_low.contains(k))
+                })
+                .unwrap_or(false);
 
         if is_sensitive {
             el.is_sensitive = true;
@@ -355,192 +573,105 @@ pub fn is_sensitive_submission(
 
 /// List open browser tabs.
 pub fn tabs() -> Result<Vec<BrowserTab>, String> {
-    let state = get_browser_state().lock().unwrap_or_else(|p| p.into_inner());
-    if !state.extension_connected && state.tabs.is_empty() {
-        return Err("bridge-unavailable: browser extension is not connected".into());
-    }
-    Ok(state.tabs.clone())
+    let data = bridge_call("browser.tabs", json!({}), None)?;
+    let tabs: Vec<BrowserTab> = serde_json::from_value(
+        data.get("tabs")
+            .cloned()
+            .ok_or_else(|| "browser-bridge-response-missing-tabs".to_string())?,
+    )
+    .map_err(|e| format!("browser-bridge-invalid-tabs: {e}"))?;
+    let mut state = get_browser_state()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    state.active_tab_id = tabs.iter().find(|tab| tab.active).map(|tab| tab.id);
+    state.tabs = tabs.clone();
+    Ok(tabs)
 }
 
 /// Open a URL in the browser. Uses security::sanitize_open_external to strictly validate target.
 pub fn open(url: &str, new_tab: bool) -> Result<BrowserTab, String> {
-    // 1. Strict URL validation via security module
     let sanitized_url = security::sanitize_open_external(url)?;
-
-    let mut state = get_browser_state().lock().unwrap_or_else(|p| p.into_inner());
-
-    if state.extension_connected {
-        let new_id = state.tabs.iter().map(|t| t.id).max().unwrap_or(0) + 1;
-        let tab = BrowserTab {
-            id: new_id,
-            title: "New Page".into(),
-            url: sanitized_url,
-            active: true,
-            status: Some("complete".into()),
-            incognito: Some(false),
-        };
-        if new_tab || state.tabs.is_empty() {
-            state.tabs.push(tab.clone());
-        } else if let Some(active_id) = state.active_tab_id {
-            if let Some(t) = state.tabs.iter_mut().find(|t| t.id == active_id) {
-                t.url = tab.url.clone();
-            }
-        }
-        state.active_tab_id = Some(tab.id);
-        Ok(tab)
+    let data = bridge_call(
+        "browser.open",
+        json!({ "url": sanitized_url, "newTab": new_tab, "active": true }),
+        None,
+    )?;
+    let id = data
+        .get("tabId")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| "browser-bridge-response-missing-tab-id".to_string())? as u32;
+    let tab = BrowserTab {
+        id,
+        title: data
+            .get("title")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+        url: data
+            .get("url")
+            .and_then(Value::as_str)
+            .unwrap_or(url)
+            .to_string(),
+        active: true,
+        status: Some("loading".into()),
+        incognito: None,
+    };
+    let mut state = get_browser_state()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    state.active_tab_id = Some(id);
+    if let Some(existing) = state.tabs.iter_mut().find(|existing| existing.id == id) {
+        *existing = tab.clone();
     } else {
-        // Fallback: launch through OS external browser launcher using sanitized URL
-        #[cfg(target_os = "windows")]
-        {
-            let wide: Vec<u16> = sanitized_url.encode_utf16().chain(std::iter::once(0)).collect();
-            let open_op: Vec<u16> = "open\0".encode_utf16().collect();
-            let res = unsafe {
-                windows_sys::Win32::UI::Shell::ShellExecuteW(
-                    std::ptr::null_mut(),
-                    open_op.as_ptr(),
-                    wide.as_ptr(),
-                    std::ptr::null(),
-                    std::ptr::null(),
-                    windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL as i32,
-                )
-            };
-            if res as usize <= 32 {
-                return Err(format!("failed to open browser via ShellExecuteW: code {res}"));
-            }
-        }
-        #[cfg(target_os = "macos")]
-        {
-            std::process::Command::new("open")
-                .arg(&sanitized_url)
-                .spawn()
-                .map_err(|e| format!("failed to launch browser: {e}"))?;
-        }
-        #[cfg(target_os = "linux")]
-        {
-            std::process::Command::new("xdg-open")
-                .arg(&sanitized_url)
-                .spawn()
-                .map_err(|e| format!("failed to launch browser: {e}"))?;
-        }
-
-        Ok(BrowserTab {
-            id: 0,
-            title: "Default Browser".into(),
-            url: sanitized_url,
-            active: true,
-            status: Some("launched".into()),
-            incognito: Some(false),
-        })
+        state.tabs.push(tab.clone());
     }
+    Ok(tab)
 }
 
 /// Inspect semantic DOM & accessibility snapshot of active or specified tab.
 pub fn inspect(tab_id: Option<u32>) -> Result<BrowserSnapshot, String> {
-    let state = get_browser_state().lock().unwrap_or_else(|p| p.into_inner());
-    let target_id = tab_id.or(state.active_tab_id).unwrap_or(0);
-
-    let snapshot = state
-        .snapshots
-        .get(&target_id)
-        .cloned()
-        .ok_or_else(|| {
-            if !state.extension_connected {
-                "bridge-unavailable: browser extension is not connected".to_string()
-            } else {
-                format!("element-not-found: tab {target_id} has no captured snapshot")
-            }
-        })?;
-
-    // Check blocked / captcha / auth challenge states
-    if snapshot.page_state.is_blocked {
-        return Err("blocked: page access forbidden or security blocked".into());
-    }
-    if snapshot.page_state.is_captcha {
-        return Err("captcha: human verification challenge detected".into());
-    }
-    if snapshot.page_state.is_auth_required {
-        return Err("auth-required: authentication or login required".into());
-    }
-
+    let data = bridge_call("browser.inspect", json!({ "maxDepth": 16 }), tab_id)?;
+    let mut snapshot: BrowserSnapshot = serde_json::from_value(data)
+        .map_err(|e| format!("browser-bridge-invalid-snapshot: {e}"))?;
+    redact_snapshot_for_planner(&mut snapshot);
+    let tab = BrowserTab {
+        id: snapshot.tab_id.unwrap_or_default(),
+        title: snapshot.title.clone(),
+        url: snapshot.url.clone(),
+        active: true,
+        status: Some("complete".into()),
+        incognito: None,
+    };
+    update_tab_snapshot(tab, snapshot.clone());
     Ok(snapshot)
 }
 
-/// Locate elements in active or specified tab by query and search mode.
+/// Locate elements in active or specified tab by semantic query or CSS selector.
 pub fn find(tab_id: Option<u32>, query: &str, by: &str) -> Result<Vec<BrowserElement>, String> {
     let snapshot = inspect(tab_id)?;
-    let q = query.to_lowercase();
-
-    let matches: Vec<BrowserElement> = match by {
-        "role" => snapshot
-            .elements
-            .into_iter()
-            .filter(|e| e.role.as_deref().map(|r| r.to_lowercase() == q).unwrap_or(false))
-            .collect(),
-        "label" | "name" => snapshot
-            .elements
-            .into_iter()
-            .filter(|e| e.name.as_deref().map(|n| n.to_lowercase().contains(&q)).unwrap_or(false))
-            .collect(),
-        _ => {
-            // Default "text" search
-            snapshot
-                .elements
-                .into_iter()
-                .filter(|e| {
-                    e.text.as_deref().map(|t| t.to_lowercase().contains(&q)).unwrap_or(false)
-                        || e.name.as_deref().map(|n| n.to_lowercase().contains(&q)).unwrap_or(false)
-                        || e.placeholder.as_deref().map(|p| p.to_lowercase().contains(&q)).unwrap_or(false)
-                })
-                .collect()
-        }
-    };
-
-    Ok(matches)
+    let data = bridge_call(
+        "browser.find",
+        json!({ "query": query, "by": by }),
+        tab_id,
+    )?;
+    let refs: Vec<String> = serde_json::from_value(
+        data.get("matches")
+            .cloned()
+            .ok_or_else(|| "browser-bridge-response-missing-matches".to_string())?,
+    )
+    .map_err(|error| format!("browser-bridge-invalid-matches: {error}"))?;
+    let refs: HashSet<_> = refs.into_iter().collect();
+    Ok(snapshot
+        .elements
+        .into_iter()
+        .filter(|element| refs.contains(&element.ref_id))
+        .collect())
 }
 
 /// Click an element by semantic ref.
 pub fn click(tab_id: Option<u32>, ref_id: &str) -> Result<BrowserActionResult, String> {
-    let state = get_browser_state().lock().unwrap_or_else(|p| p.into_inner());
-    let target_id = tab_id.or(state.active_tab_id).unwrap_or(0);
-
-    let snapshot = state
-        .snapshots
-        .get(&target_id)
-        .ok_or_else(|| "bridge-unavailable: no tab snapshot available".to_string())?;
-
-    if snapshot.is_mutating {
-        return Err("spa-mutation: DOM actively mutating; retry after stabilization".into());
-    }
-
-    let el = snapshot
-        .elements
-        .iter()
-        .find(|e| e.ref_id == ref_id)
-        .ok_or_else(|| format!("stale-ref: element '{ref_id}' is no longer in DOM"))?;
-
-    if el.disabled {
-        return Err(format!("element-disabled: element '{ref_id}' is disabled"));
-    }
-
-    Ok(BrowserActionResult {
-        success: true,
-        ref_id: Some(ref_id.to_string()),
-        navigated: Some(false),
-        value_length: None,
-        selected_value: None,
-        scroll_x: None,
-        scroll_y: None,
-        content: None,
-        format: None,
-        matched: None,
-        elapsed_ms: None,
-        download_id: None,
-        state: None,
-        filename: None,
-        verified: None,
-        actual: None,
-        error: None,
-    })
+    let data = bridge_call("browser.click", json!({ "ref": ref_id }), tab_id)?;
+    serde_json::from_value(data).map_err(|e| format!("browser-bridge-invalid-action-result: {e}"))
 }
 
 /// Type text into an input or textarea element by ref.
@@ -551,130 +682,40 @@ pub fn type_text(
     clear: bool,
     submit: bool,
 ) -> Result<BrowserActionResult, String> {
-    let mut state = get_browser_state().lock().unwrap_or_else(|p| p.into_inner());
-    let target_id = tab_id.or(state.active_tab_id).unwrap_or(0);
-
-    let snapshot = state
-        .snapshots
-        .get_mut(&target_id)
-        .ok_or_else(|| "bridge-unavailable: no tab snapshot available".to_string())?;
-
-    if snapshot.is_mutating {
-        return Err("spa-mutation: DOM actively mutating; retry after stabilization".into());
-    }
-
-    let el = snapshot
-        .elements
-        .iter_mut()
-        .find(|e| e.ref_id == ref_id)
-        .ok_or_else(|| format!("stale-ref: element '{ref_id}' is no longer in DOM"))?;
-
-    if el.disabled {
-        return Err(format!("element-disabled: element '{ref_id}' is disabled"));
-    }
-
-    let current_val = if clear { "" } else { el.value.as_deref().unwrap_or("") };
-    let new_val = format!("{current_val}{text}");
-    let val_len = new_val.len();
-    el.value = Some(new_val);
-
-    Ok(BrowserActionResult {
-        success: true,
-        ref_id: Some(ref_id.to_string()),
-        navigated: Some(submit),
-        value_length: Some(val_len),
-        selected_value: None,
-        scroll_x: None,
-        scroll_y: None,
-        content: None,
-        format: None,
-        matched: None,
-        elapsed_ms: None,
-        download_id: None,
-        state: None,
-        filename: None,
-        verified: None,
-        actual: None,
-        error: None,
-    })
+    let data = bridge_call(
+        "browser.type",
+        json!({ "ref": ref_id, "text": text, "clear": clear, "submit": submit }),
+        tab_id,
+    )?;
+    serde_json::from_value(data).map_err(|e| format!("browser-bridge-invalid-action-result: {e}"))
 }
 
 /// Select an option in a dropdown element by ref.
-pub fn select(tab_id: Option<u32>, ref_id: &str, value: &str) -> Result<BrowserActionResult, String> {
-    let mut state = get_browser_state().lock().unwrap_or_else(|p| p.into_inner());
-    let target_id = tab_id.or(state.active_tab_id).unwrap_or(0);
-
-    let snapshot = state
-        .snapshots
-        .get_mut(&target_id)
-        .ok_or_else(|| "bridge-unavailable: no tab snapshot available".to_string())?;
-
-    let el = snapshot
-        .elements
-        .iter_mut()
-        .find(|e| e.ref_id == ref_id)
-        .ok_or_else(|| format!("stale-ref: element '{ref_id}' is no longer in DOM"))?;
-
-    if el.tag != "select" {
-        return Err(format!("invalid-target: element '{ref_id}' is not a SELECT tag"));
-    }
-
-    el.value = Some(value.to_string());
-
-    Ok(BrowserActionResult {
-        success: true,
-        ref_id: Some(ref_id.to_string()),
-        navigated: Some(false),
-        value_length: None,
-        selected_value: Some(value.to_string()),
-        scroll_x: None,
-        scroll_y: None,
-        content: None,
-        format: None,
-        matched: None,
-        elapsed_ms: None,
-        download_id: None,
-        state: None,
-        filename: None,
-        verified: None,
-        actual: None,
-        error: None,
-    })
+pub fn select(
+    tab_id: Option<u32>,
+    ref_id: &str,
+    value: &str,
+) -> Result<BrowserActionResult, String> {
+    let data = bridge_call(
+        "browser.select",
+        json!({ "ref": ref_id, "value": value }),
+        tab_id,
+    )?;
+    serde_json::from_value(data).map_err(|e| format!("browser-bridge-invalid-action-result: {e}"))
 }
 
 /// Scroll active tab or element.
 pub fn scroll(
-    _tab_id: Option<u32>,
+    tab_id: Option<u32>,
     direction: &str,
     amount: i32,
 ) -> Result<BrowserActionResult, String> {
-    let (dx, dy) = match direction {
-        "up" => (0.0, -(amount as f64)),
-        "down" => (0.0, amount as f64),
-        "top" => (0.0, 0.0),
-        "bottom" => (0.0, 5000.0),
-        _ => return Err(format!("invalid-args: direction must be up, down, top, or bottom; got '{direction}'")),
-    };
-
-    Ok(BrowserActionResult {
-        success: true,
-        ref_id: None,
-        navigated: None,
-        value_length: None,
-        selected_value: None,
-        scroll_x: Some(dx),
-        scroll_y: Some(dy),
-        content: None,
-        format: None,
-        matched: None,
-        elapsed_ms: None,
-        download_id: None,
-        state: None,
-        filename: None,
-        verified: None,
-        actual: None,
-        error: None,
-    })
+    let data = bridge_call(
+        "browser.scroll",
+        json!({ "direction": direction, "amount": amount }),
+        tab_id,
+    )?;
+    serde_json::from_value(data).map_err(|e| format!("browser-bridge-invalid-action-result: {e}"))
 }
 
 /// Extract text, markdown, or HTML from active tab or element.
@@ -683,46 +724,12 @@ pub fn extract(
     ref_id: Option<&str>,
     format: &str,
 ) -> Result<BrowserActionResult, String> {
-    let snapshot = inspect(tab_id)?;
-
-    let content = if let Some(r) = ref_id {
-        let el = snapshot
-            .elements
-            .iter()
-            .find(|e| e.ref_id == r)
-            .ok_or_else(|| format!("element-not-found: element '{r}' not found"))?;
-        el.text
-            .clone()
-            .or_else(|| el.value.clone())
-            .unwrap_or_default()
-    } else {
-        snapshot
-            .elements
-            .iter()
-            .filter_map(|e| e.text.as_deref().or(e.name.as_deref()))
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
-
-    Ok(BrowserActionResult {
-        success: true,
-        ref_id: ref_id.map(ToString::to_string),
-        navigated: None,
-        value_length: None,
-        selected_value: None,
-        scroll_x: None,
-        scroll_y: None,
-        content: Some(content),
-        format: Some(format.to_string()),
-        matched: None,
-        elapsed_ms: None,
-        download_id: None,
-        state: None,
-        filename: None,
-        verified: None,
-        actual: None,
-        error: None,
-    })
+    let data = bridge_call(
+        "browser.extract",
+        json!({ "ref": ref_id, "format": format }),
+        tab_id,
+    )?;
+    serde_json::from_value(data).map_err(|e| format!("browser-bridge-invalid-action-result: {e}"))
 }
 
 /// Wait for element condition in active tab.
@@ -732,186 +739,72 @@ pub fn wait(
     condition: &str,
     timeout_ms: u64,
 ) -> Result<BrowserActionResult, String> {
-    let snapshot = inspect(tab_id)?;
-
-    let matched = match condition {
-        "present" | "visible" => {
-            snapshot.elements.iter().any(|e| {
-                e.ref_id == selector
-                    || e.name.as_deref().map(|n| n.contains(selector)).unwrap_or(false)
-                    || e.tag == selector
-            })
-        }
-        "hidden" | "gone" => {
-            !snapshot.elements.iter().any(|e| e.ref_id == selector)
-        }
-        other => return Err(format!("invalid-args: condition must be present, visible, hidden, or gone; got '{other}'")),
-    };
-
-    if !matched && timeout_ms == 0 {
-        return Err(format!("action-timeout: condition '{condition}' not met for '{selector}'"));
-    }
-
-    Ok(BrowserActionResult {
-        success: matched,
-        ref_id: None,
-        navigated: None,
-        value_length: None,
-        selected_value: None,
-        scroll_x: None,
-        scroll_y: None,
-        content: None,
-        format: None,
-        matched: Some(matched),
-        elapsed_ms: Some(10),
-        download_id: None,
-        state: None,
-        filename: None,
-        verified: None,
-        actual: None,
-        error: None,
-    })
+    let data = bridge_call(
+        "browser.wait",
+        json!({ "selector": selector, "condition": condition, "timeoutMs": timeout_ms.min(30_000) }),
+        tab_id,
+    )?;
+    serde_json::from_value(data).map_err(|e| format!("browser-bridge-invalid-action-result: {e}"))
 }
 
 /// Trigger or observe a download via browser download manager.
 pub fn download(url: &str, filename: Option<&str>) -> Result<BrowserActionResult, String> {
     let sanitized_url = security::sanitize_open_external(url)?;
-
-    Ok(BrowserActionResult {
-        success: true,
-        ref_id: None,
-        navigated: None,
-        value_length: None,
-        selected_value: None,
-        scroll_x: None,
-        scroll_y: None,
-        content: None,
-        format: None,
-        matched: None,
-        elapsed_ms: None,
-        download_id: Some(rand::random::<u32>() as u64),
-        state: Some("complete".into()),
-        filename: filename.map(ToString::to_string).or_else(|| {
-            sanitized_url
-                .split('/')
-                .last()
-                .filter(|s| !s.is_empty())
-                .map(ToString::to_string)
-        }),
-        verified: None,
-        actual: None,
-        error: None,
-    })
+    let data = bridge_call(
+        "browser.download",
+        json!({ "url": sanitized_url, "filename": filename }),
+        None,
+    )?;
+    serde_json::from_value(data).map_err(|e| format!("browser-bridge-invalid-action-result: {e}"))
 }
 
 /// Post-action semantic verification hook.
 pub fn verify_action(contract: &VerificationContract) -> Result<BrowserActionResult, String> {
-    let state = get_browser_state().lock().unwrap_or_else(|p| p.into_inner());
-    let target_id = state.active_tab_id.unwrap_or(0);
-
-    let snapshot = match state.snapshots.get(&target_id) {
-        Some(s) => s,
-        None => {
-            if contract.kind == "none" {
-                return Ok(BrowserActionResult {
-                    success: true,
-                    ref_id: None,
-                    navigated: None,
-                    value_length: None,
-                    selected_value: None,
-                    scroll_x: None,
-                    scroll_y: None,
-                    content: None,
-                    format: None,
-                    matched: None,
-                    elapsed_ms: None,
-                    download_id: None,
-                    state: None,
-                    filename: None,
-                    verified: Some(true),
-                    actual: Some(json!({"kind": "none"})),
-                    error: None,
-                });
-            }
-            return Err("bridge-unavailable: no tab snapshot available for verification".into());
-        }
-    };
-
-    let (verified, actual) = match contract.kind.as_str() {
-        "none" => (true, json!({"status": "unverified"})),
-        "element_present" | "browser.element_present" => {
-            let sel = contract.selector.as_deref().unwrap_or("");
-            let present = snapshot.elements.iter().any(|e| {
-                e.ref_id == sel
-                    || e.name.as_deref().map(|n| n.contains(sel)).unwrap_or(false)
-                    || e.tag == sel
-            });
-            (present, json!(present))
-        }
-        "element_hidden" | "browser.element_hidden" => {
-            let sel = contract.selector.as_deref().unwrap_or("");
-            let present = snapshot.elements.iter().any(|e| e.ref_id == sel);
-            (!present, json!(!present))
-        }
-        "text_contains" | "browser.text_contains" => {
-            let expect_str = contract
-                .expect
-                .as_str()
-                .unwrap_or_default()
-                .to_lowercase();
-            let text_matched = snapshot.elements.iter().any(|e| {
-                e.text
-                    .as_deref()
-                    .map(|t| t.to_lowercase().contains(&expect_str))
-                    .unwrap_or(false)
-                    || e.name
-                        .as_deref()
-                        .map(|n| n.to_lowercase().contains(&expect_str))
-                        .unwrap_or(false)
-            });
-            (text_matched, json!(text_matched))
-        }
-        "url_matches" | "browser.url_matches" => {
-            let expect_url = contract.expect.as_str().unwrap_or_default();
-            let matched = snapshot.url.contains(expect_url);
-            (matched, json!(snapshot.url.clone()))
-        }
-        "title_is" | "browser.title_is" => {
-            let expect_title = contract.expect.as_str().unwrap_or_default();
-            let matched = snapshot.title == expect_title;
-            (matched, json!(snapshot.title.clone()))
-        }
-        other => {
-            return Err(format!("unsupported-verification-kind: '{other}'"));
-        }
-    };
-
-    if !verified {
-        return Err(format!(
-            "verification-failed: contract '{}' expected {:?}, actual {:?}",
-            contract.kind, contract.expect, actual
-        ));
+    if contract.kind == "none" {
+        return Ok(BrowserActionResult {
+            success: true,
+            ref_id: None,
+            navigated: None,
+            value_length: None,
+            selected_value: None,
+            scroll_x: None,
+            scroll_y: None,
+            content: None,
+            format: None,
+            matched: None,
+            elapsed_ms: None,
+            download_id: None,
+            state: None,
+            filename: None,
+            verified: Some(true),
+            actual: Some(json!({"kind": "none"})),
+            error: None,
+        });
     }
 
-    Ok(BrowserActionResult {
-        success: true,
-        ref_id: None,
-        navigated: None,
-        value_length: None,
-        selected_value: None,
-        scroll_x: None,
-        scroll_y: None,
-        content: None,
-        format: None,
-        matched: None,
-        elapsed_ms: None,
-        download_id: None,
-        state: None,
-        filename: None,
-        verified: Some(true),
-        actual: Some(actual),
-        error: None,
-    })
+    let kind = contract
+        .kind
+        .strip_prefix("browser.")
+        .unwrap_or(&contract.kind);
+    let data = bridge_call(
+        "browser.verify",
+        json!({
+            "kind": kind,
+            "selector": contract.selector,
+            "expect": contract.expect,
+            "timeoutMs": contract.timeout_ms.min(30_000)
+        }),
+        None,
+    )?;
+    let result: BrowserActionResult = serde_json::from_value(data)
+        .map_err(|error| format!("browser-bridge-invalid-verification-result: {error}"))?;
+    if result.verified != Some(true) {
+        return Err(format!(
+            "verification-failed: contract '{}' expected {:?}, actual {:?}",
+            contract.kind, contract.expect, result.actual
+        ));
+    }
+    Ok(result)
 }
 
 // ---------------------------------------------------------------------------
@@ -939,7 +832,12 @@ mod tests {
                     disabled: false,
                     is_sensitive: true,
                     is_interactive: true,
-                    bounds: Some(ElementBounds { x: 10.0, y: 10.0, width: 200.0, height: 30.0 }),
+                    bounds: Some(ElementBounds {
+                        x: 10.0,
+                        y: 10.0,
+                        width: 200.0,
+                        height: 30.0,
+                    }),
                 },
                 BrowserElement {
                     ref_id: "b2".into(),
@@ -952,7 +850,12 @@ mod tests {
                     disabled: false,
                     is_sensitive: false,
                     is_interactive: true,
-                    bounds: Some(ElementBounds { x: 10.0, y: 50.0, width: 100.0, height: 40.0 }),
+                    bounds: Some(ElementBounds {
+                        x: 10.0,
+                        y: 50.0,
+                        width: 100.0,
+                        height: 40.0,
+                    }),
                 },
                 BrowserElement {
                     ref_id: "b3".into(),
@@ -965,7 +868,12 @@ mod tests {
                     disabled: false,
                     is_sensitive: false,
                     is_interactive: true,
-                    bounds: Some(ElementBounds { x: 10.0, y: 100.0, width: 150.0, height: 30.0 }),
+                    bounds: Some(ElementBounds {
+                        x: 10.0,
+                        y: 100.0,
+                        width: 150.0,
+                        height: 30.0,
+                    }),
                 },
             ],
             is_mutating: false,
@@ -975,6 +883,7 @@ mod tests {
 
     #[test]
     fn test_pairing_secret_generation_and_verification() {
+        set_pairing_secret("0123456789abcdef0123456789abcdef");
         let secret = get_pairing_secret();
         assert_eq!(secret.len(), 32);
         assert!(verify_pairing_token(&secret));
@@ -1002,112 +911,26 @@ mod tests {
 
         // Typing into sensitive field triggers confirm
         let type_args = json!({ "ref": "b1", "text": "1234" });
-        assert!(is_sensitive_submission("browser.type", &type_args, Some(&snapshot)));
+        assert!(is_sensitive_submission(
+            "browser.type",
+            &type_args,
+            Some(&snapshot)
+        ));
 
         // Clicking pay button triggers confirm
         let click_args = json!({ "ref": "b2" });
-        assert!(is_sensitive_submission("browser.click", &click_args, Some(&snapshot)));
+        assert!(is_sensitive_submission(
+            "browser.click",
+            &click_args,
+            Some(&snapshot)
+        ));
 
         // Selecting non-sensitive country does not trigger confirm
         let select_args = json!({ "ref": "b3", "value": "CA" });
-        assert!(!is_sensitive_submission("browser.select", &select_args, Some(&snapshot)));
-    }
-
-    #[test]
-    fn test_element_interaction_and_stale_ref_handling() {
-        let tab = BrowserTab {
-            id: 1,
-            title: "Checkout".into(),
-            url: "https://example.com/checkout".into(),
-            active: true,
-            status: Some("complete".into()),
-            incognito: None,
-        };
-        update_tab_snapshot(tab, sample_snapshot());
-
-        // Click existing ref
-        let click_res = click(Some(1), "b2").expect("click failed");
-        assert!(click_res.success);
-
-        // Click non-existent ref returns stale-ref error
-        let err = click(Some(1), "b999").unwrap_err();
-        assert!(err.starts_with("stale-ref:"));
-
-        // Type text into input
-        let type_res = type_text(Some(1), "b1", "5555", true, false).expect("type failed");
-        assert!(type_res.success);
-        assert_eq!(type_res.value_length, Some(4));
-
-        // Select option
-        let select_res = select(Some(1), "b3", "UK").expect("select failed");
-        assert_eq!(select_res.selected_value.as_deref(), Some("UK"));
-    }
-
-    #[test]
-    fn test_verification_contract_evaluation() {
-        let tab = BrowserTab {
-            id: 1,
-            title: "Example Checkout".into(),
-            url: "https://example.com/checkout".into(),
-            active: true,
-            status: Some("complete".into()),
-            incognito: None,
-        };
-        update_tab_snapshot(tab, sample_snapshot());
-
-        // Element present verification
-        let v1 = VerificationContract {
-            kind: "browser.element_present".into(),
-            selector: Some("b2".into()),
-            expect: json!(true),
-            timeout_ms: 1000,
-        };
-        assert!(verify_action(&v1).is_ok());
-
-        // Text contains verification
-        let v2 = VerificationContract {
-            kind: "browser.text_contains".into(),
-            selector: None,
-            expect: json!("Pay Now"),
-            timeout_ms: 1000,
-        };
-        assert!(verify_action(&v2).is_ok());
-
-        // URL matches verification
-        let v3 = VerificationContract {
-            kind: "browser.url_matches".into(),
-            selector: None,
-            expect: json!("checkout"),
-            timeout_ms: 1000,
-        };
-        assert!(verify_action(&v3).is_ok());
-
-        // Negative check: wrong title fails verification
-        let v_fail = VerificationContract {
-            kind: "browser.title_is".into(),
-            selector: None,
-            expect: json!("Wrong Title"),
-            timeout_ms: 1000,
-        };
-        assert!(verify_action(&v_fail).is_err());
-    }
-
-    #[test]
-    fn test_blocked_and_captcha_state_handling() {
-        let mut blocked_snap = sample_snapshot();
-        blocked_snap.page_state.is_blocked = true;
-
-        let tab = BrowserTab {
-            id: 2,
-            title: "Blocked".into(),
-            url: "https://example.com/blocked".into(),
-            active: true,
-            status: Some("complete".into()),
-            incognito: None,
-        };
-        update_tab_snapshot(tab, blocked_snap);
-
-        let err = inspect(Some(2)).unwrap_err();
-        assert!(err.starts_with("blocked:"));
+        assert!(!is_sensitive_submission(
+            "browser.select",
+            &select_args,
+            Some(&snapshot)
+        ));
     }
 }

@@ -136,10 +136,9 @@ commands.allow = [
 
 [[permission]]
 identifier = "allow-update-manage"
-description = "Inspect update status, change release channel, check updates, and rollback (main window only)."
+description = "Inspect update status, change the release channel, and check for updates (main window only)."
 commands.allow = [
     "get_update_status",
     "set_update_channel",
     "check_for_updates",
-    "rollback_update",
 ]

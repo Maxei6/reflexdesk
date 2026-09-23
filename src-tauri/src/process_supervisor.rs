@@ -38,7 +38,10 @@ impl OwnershipClass {
     /// Returns true if ReflexDesk owns this process lifecycle and must terminate it on shutdown.
     #[must_use]
     pub fn is_owned(self) -> bool {
-        matches!(self, OwnershipClass::Internal | OwnershipClass::OwnedSession)
+        matches!(
+            self,
+            OwnershipClass::Internal | OwnershipClass::OwnedSession
+        )
     }
 }
 
@@ -134,7 +137,7 @@ impl ProcessSpec {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProcessIdentity {
     pub pid: u32,
-    pub start_identity: u64,
+    pub start_identity: Option<u64>,
     pub group_or_job: Option<String>,
 }
 
@@ -185,7 +188,7 @@ fn next_process_id() -> ProcessId {
     use rand::RngCore;
     let count = COUNTER.fetch_add(1, Ordering::Relaxed);
     let mut rnd_bytes = [0u8; 8];
-    rand::rngs::OsRng.fill_bytes(&mut rnd_bytes);
+    rand::rng().fill_bytes(&mut rnd_bytes);
     let rnd = u64::from_le_bytes(rnd_bytes);
     ProcessId::new(count, rnd)
 }
@@ -291,8 +294,7 @@ impl ProcessSupervisor {
                             .stdout(Stdio::piped())
                             .stderr(Stdio::piped());
 
-                        let (child, job_handle) =
-                            platform::spawn_command_in_job(&mut cmd)?;
+                        let (child, job_handle) = platform::spawn_command_in_job(&mut cmd)?;
                         let pid = child.id();
                         (pid, Some(child), Some(job_handle))
                     } else {
@@ -334,8 +336,8 @@ impl ProcessSupervisor {
                     let pid = child.id();
                     let pgid = pid as i32;
 
-                    let mut plat = maybe_platform
-                        .unwrap_or_else(|| platform::PlatformHandle::new(pgid));
+                    let mut plat =
+                        maybe_platform.unwrap_or_else(|| platform::PlatformHandle::new(pgid));
                     plat.pgid = pgid;
 
                     (pid, Some(child), Some(plat))
@@ -368,16 +370,10 @@ impl ProcessSupervisor {
             }
         };
 
-        let group_or_job = match spec.ownership {
-            OwnershipClass::Internal | OwnershipClass::OwnedSession => {
-                Some(format!("{}-pid-{}", spec.ownership.is_owned(), pid))
-            }
-            _ => None,
-        };
-
+        let group_or_job = platform_opt.as_ref().map(|handle| handle.identity_label());
         let identity = ProcessIdentity {
             pid,
-            start_identity: now_ms,
+            start_identity: platform::process_start_identity(pid),
             group_or_job,
         };
 
@@ -486,21 +482,30 @@ impl ProcessSupervisor {
         Some((child.stdout.take(), child.stderr.take()))
     }
 
+    fn tracked_is_alive(tracked: &mut TrackedChild) -> bool {
+        if let Some(child) = tracked.child.as_mut() {
+            return matches!(child.try_wait(), Ok(None));
+        }
+        match (
+            tracked.identity.start_identity,
+            platform::process_start_identity(tracked.identity.pid),
+        ) {
+            (Some(expected), Some(observed)) => expected == observed,
+            _ => false,
+        }
+    }
+
     /// Check if a supervised process is still alive.
     pub fn is_alive(&self, id: ProcessId) -> bool {
         let mut inner = match self.inner.lock() {
             Ok(guard) => guard,
             Err(_) => return false,
         };
-        if let Some(tracked) = inner.children.get_mut(&id.raw()) {
-            if let Some(child) = tracked.child.as_mut() {
-                matches!(child.try_wait(), Ok(None))
-            } else {
-                true
-            }
-        } else {
-            false
-        }
+        inner
+            .children
+            .get_mut(&id.raw())
+            .map(Self::tracked_is_alive)
+            .unwrap_or(false)
     }
 
     /// Reaps finished child processes.
@@ -508,13 +513,9 @@ impl ProcessSupervisor {
         let Ok(mut inner) = self.inner.lock() else {
             return;
         };
-        inner.children.retain(|_, tracked| {
-            if let Some(child) = tracked.child.as_mut() {
-                matches!(child.try_wait(), Ok(None))
-            } else {
-                true
-            }
-        });
+        inner
+            .children
+            .retain(|_, tracked| Self::tracked_is_alive(tracked));
     }
 
     /// Diagnostic snapshot of all tracked processes (no command arguments or secrets).
@@ -527,11 +528,7 @@ impl ProcessSupervisor {
             .children
             .iter_mut()
             .map(|(raw_id, tracked)| {
-                let alive = if let Some(child) = tracked.child.as_mut() {
-                    matches!(child.try_wait(), Ok(None))
-                } else {
-                    true
-                };
+                let alive = Self::tracked_is_alive(tracked);
                 ProcessSnapshot {
                     id: ProcessId(*raw_id).to_string(),
                     pid: Some(tracked.identity.pid),
@@ -542,37 +539,6 @@ impl ProcessSupervisor {
                 }
             })
             .collect()
-    }
-
-    /// Legacy tracking method for backward compatibility.
-    pub fn track(&self, label: String, child: Child) -> Result<ProcessId, String> {
-        let id = next_process_id();
-        let pid = child.id();
-        let now = Instant::now();
-        let now_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
-
-        let identity = ProcessIdentity {
-            pid,
-            start_identity: now_ms,
-            group_or_job: Some(label),
-        };
-
-        let tracked = TrackedChild {
-            identity,
-            ownership: OwnershipClass::OwnedSession,
-            program: format!("pid-{pid}"),
-            start_time: now,
-            start_time_ms: now_ms,
-            child: Some(child),
-            platform_handle: None,
-        };
-
-        let mut inner = self.inner.lock().map_err(|_| "supervisor lock poisoned")?;
-        inner.children.insert(id.raw(), tracked);
-        Ok(id)
     }
 
     /// Terminates an owned process across all supervisor instances.
@@ -607,10 +573,7 @@ impl ProcessSupervisor {
             for inner_arc in registry.iter() {
                 if let Ok(mut inner) = inner_arc.lock() {
                     if let Some(tracked) = inner.children.get_mut(&id.raw()) {
-                        if let Some(child) = tracked.child.as_mut() {
-                            return matches!(child.try_wait(), Ok(None));
-                        }
-                        return true;
+                        return Self::tracked_is_alive(tracked);
                     }
                 }
             }
@@ -625,5 +588,68 @@ impl Drop for ProcessSupervisor {
         if Arc::strong_count(&self.inner) <= 2 {
             let _ = self.terminate_all_owned();
         }
+    }
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod windows_tests {
+    use super::*;
+
+    fn ping_spec(ownership: OwnershipClass, count: &str) -> ProcessSpec {
+        ProcessSpec {
+            program: PathBuf::from("ping.exe"),
+            args: vec!["-n".into(), count.into(), "127.0.0.1".into()],
+            cwd: None,
+            env_add: HashMap::new(),
+            env_remove: Vec::new(),
+            ownership,
+            piped_stdio: false,
+        }
+    }
+
+    #[test]
+    fn owned_job_process_is_really_terminated() {
+        let supervisor = ProcessSupervisor::new();
+        let id = supervisor
+            .spawn(ping_spec(OwnershipClass::Internal, "30"))
+            .expect("owned process should spawn");
+        let snapshot = supervisor.snapshot();
+        let pid = snapshot
+            .iter()
+            .find(|process| process.id == id.to_string())
+            .and_then(|process| process.pid)
+            .expect("spawned process should have a PID");
+        let start_identity =
+            platform::process_start_identity(pid).expect("spawned process should be queryable");
+        assert!(supervisor.is_alive(id));
+        assert!(supervisor.terminate_owned(id));
+
+        for _ in 0..40 {
+            if platform::process_start_identity(pid) != Some(start_identity) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        panic!("owned process survived Job Object termination");
+    }
+
+    #[test]
+    fn user_app_is_not_terminated_by_owned_cleanup() {
+        let supervisor = ProcessSupervisor::new();
+        let id = supervisor
+            .spawn(ping_spec(OwnershipClass::UserApp, "2"))
+            .expect("user process should spawn");
+        assert!(supervisor.is_alive(id));
+        assert!(!supervisor.terminate_owned(id));
+        assert!(supervisor.is_alive(id));
+
+        for _ in 0..120 {
+            if !supervisor.is_alive(id) {
+                supervisor.cleanup_finished();
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        panic!("user process did not exit naturally");
     }
 }

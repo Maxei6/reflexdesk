@@ -1,7 +1,7 @@
 # Plan 02 — Semantic desktop control
 
 **Priority:** P1  
-**Status:** ACCEPTANCE PENDING  
+**Status:** PARTIAL — WINDOWS WIN32 FALLBACK ONLY
 **Depends on:** policy engine
 
 ## Objective
@@ -71,9 +71,9 @@ call verifies the resulting state.
 
 - Canonical types implemented in `src-tauri/src/desktop.rs`: `ElementBounds`, `DesktopElement`, `WindowInfo`, `DesktopSnapshot`, `ElementSelector`, `DisambiguationCandidate`, `DesktopHealth`.
 - Platform backends:
-  - Windows: Win32 accessibility + UI Automation COM (`WindowsBackend`).
-  - macOS: AX Accessibility backend with permission check and onboarding recovery instructions (`MacosBackend`).
-  - Linux: AT-SPI2 backend with D-Bus accessibility socket detection and setup instructions (`LinuxBackend`).
+  - Windows: native Win32 window/control enumeration and message-based operations (`WindowsBackend`). UIA patterns are not linked, so custom-rendered and modern controls may be inaccessible.
+  - macOS: returns typed `desktop-backend-unavailable` errors. The AX adapter and permission flow are not linked.
+  - Linux: detects AT-SPI availability for recovery guidance but returns typed `desktop-backend-unavailable` errors. The semantic AT-SPI adapter is not linked.
 - Semantic selector engine: Role (30 pts) > Accessible name (50 pts exact, 45 pts case-insensitive, 25 pts substring) > Value/text (20 pts) > Context (20 pts) > Process/Window (15 pts).
 - Stable element references: Monotonic `SNAPSHOT_GENERATION` counter + snapshot caching in `DESKTOP_CACHE` with stale-reference recovery matching by role/name/context on UI mutation.
 - Post-action verification: `verify_contract` with polling loop up to `timeout_ms` for `window-focused`, `window-closed`, `desktop-element-state`, and `vision-fallback`.
@@ -89,3 +89,7 @@ call verifies the resulting state.
   - Tool execution dispatched via `tools::execute()` through `execute_verified()`.
   - Post-action verification hook in `policy::verify_stub()`.
   - `get_desktop_health` command with `allow-desktop-health` permission in `permissions/reflexdesk.toml` and `capabilities/main.json`.
+
+- Acceptance remains open: the representative cross-platform tasks in the
+  Definition of done have not been exercised, and two platform adapters plus
+  Windows UIA remain unimplemented.

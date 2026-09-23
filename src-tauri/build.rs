@@ -45,7 +45,6 @@ fn main() {
             "get_update_status",
             "set_update_channel",
             "check_for_updates",
-            "rollback_update",
         ])),
     )
     .unwrap();

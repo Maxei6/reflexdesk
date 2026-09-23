@@ -415,10 +415,18 @@ pub trait DesktopBackend: Send + Sync {
     fn inspect(&self, target_window: Option<&str>) -> Result<DesktopSnapshot, String>;
 
     /// Focus a top-level window by ID, title, or process name.
-    fn focus_window(&self, window_id: Option<u64>, title_or_app: Option<&str>) -> Result<WindowInfo, String>;
+    fn focus_window(
+        &self,
+        window_id: Option<u64>,
+        title_or_app: Option<&str>,
+    ) -> Result<WindowInfo, String>;
 
     /// Close a top-level window.
-    fn close_window(&self, window_id: Option<u64>, title_or_app: Option<&str>) -> Result<(), String>;
+    fn close_window(
+        &self,
+        window_id: Option<u64>,
+        title_or_app: Option<&str>,
+    ) -> Result<(), String>;
 
     /// Invoke an element's action (e.g. toggle, expand, invoke).
     fn invoke_element(&self, element: &DesktopElement, action: &str) -> Result<(), String>;
@@ -427,20 +435,30 @@ pub trait DesktopBackend: Send + Sync {
     fn click_element(&self, element: &DesktopElement) -> Result<(), String>;
 
     /// Type text into an element.
-    fn type_element(&self, element: &DesktopElement, text: &str, clear_first: bool) -> Result<(), String>;
+    fn type_element(
+        &self,
+        element: &DesktopElement,
+        text: &str,
+        clear_first: bool,
+    ) -> Result<(), String>;
 
     /// Press a keyboard key or key combination.
     fn press_key(&self, key: &str, modifiers: &[&str]) -> Result<(), String>;
 
     /// Scroll an element.
-    fn scroll_element(&self, element: &DesktopElement, direction: &str, amount: f64) -> Result<(), String>;
+    fn scroll_element(
+        &self,
+        element: &DesktopElement,
+        direction: &str,
+        amount: f64,
+    ) -> Result<(), String>;
 
     /// Read an element's text/value.
     fn read_element(&self, element: &DesktopElement) -> Result<String, String>;
 }
 
 // ---------------------------------------------------------------------------
-// Windows Implementation (UIA + Win32 Accessibility)
+// Windows Implementation (native Win32 accessibility fallback)
 // ---------------------------------------------------------------------------
 
 #[cfg(target_os = "windows")]
@@ -448,12 +466,13 @@ mod windows_backend {
     use super::*;
     use std::ffi::OsString;
     use std::os::windows::ffi::OsStringExt;
-    use windows_sys::Win32::Foundation::{BOOL, HWND, LPARAM, LRESULT, POINT, RECT};
+    use windows_sys::Win32::Foundation::{BOOL, HWND, LPARAM, RECT};
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         EnumChildWindows, EnumWindows, GetClassNameW, GetForegroundWindow, GetWindowRect,
-        GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindowEnabled,
-        IsWindowVisible, PostMessageW, SendMessageW, SetForegroundWindow, ShowWindow, BM_CLICK,
-        SW_RESTORE, SW_SHOW, WM_CLOSE, WM_GETTEXT, WM_SETFOCUS, WM_SETTEXT,
+        GetWindowTextLengthW, GetWindowTextW, IsIconic, IsWindowVisible, PostMessageW,
+        SendMessageW, SetForegroundWindow, ShowWindow, BM_CLICK, SW_RESTORE, SW_SHOW, WM_CLOSE,
+        WM_SETFOCUS, WM_SETTEXT,
     };
 
     pub struct WindowsBackend;
@@ -476,13 +495,17 @@ mod windows_backend {
             return 1;
         }
         title_buf.truncate(read_len as usize);
-        let title = OsString::from_wide(&title_buf).to_string_lossy().to_string();
+        let title = OsString::from_wide(&title_buf)
+            .to_string_lossy()
+            .to_string();
 
         let mut class_buf: Vec<u16> = vec![0; 256];
         let class_len = GetClassNameW(hwnd, class_buf.as_mut_ptr(), 256);
         let class_name = if class_len > 0 {
             class_buf.truncate(class_len as usize);
-            OsString::from_wide(&class_buf).to_string_lossy().to_string()
+            OsString::from_wide(&class_buf)
+                .to_string_lossy()
+                .to_string()
         } else {
             String::new()
         };
@@ -508,7 +531,9 @@ mod windows_backend {
         let class_len = GetClassNameW(hwnd, class_buf.as_mut_ptr(), 128);
         let class_name = if class_len > 0 {
             class_buf.truncate(class_len as usize);
-            OsString::from_wide(&class_buf).to_string_lossy().to_string()
+            OsString::from_wide(&class_buf)
+                .to_string_lossy()
+                .to_string()
         } else {
             "Control".to_string()
         };
@@ -579,7 +604,7 @@ mod windows_backend {
                 healthy: true,
                 platform: "windows",
                 permissions_granted: true,
-                details: "Windows native Win32 & UI Automation subsystem available".into(),
+                details: "Windows native Win32 accessibility fallback available; UIA patterns are not linked".into(),
                 recovery_instructions: None,
             }
         }
@@ -630,7 +655,9 @@ mod windows_backend {
                             || c.to_lowercase().contains(&target_lower)
                     })
                     .map(|(h, _, _, _, _, _)| *h)
-                    .ok_or_else(|| format!("app-closed: window matching '{target}' is not running"))?
+                    .ok_or_else(|| {
+                        format!("app-closed: window matching '{target}' is not running")
+                    })?
             } else {
                 fg_hwnd
             };
@@ -675,7 +702,9 @@ mod windows_backend {
             }
 
             let target = if let Some(id) = window_id {
-                raw_windows.iter().find(|(h, _, _, _, _, _)| (*h as usize as u64) == id)
+                raw_windows
+                    .iter()
+                    .find(|(h, _, _, _, _, _)| (*h as usize as u64) == id)
             } else if let Some(query) = title_or_app {
                 let q_lower = query.to_lowercase();
                 raw_windows.iter().find(|(_, t, c, _, _, _)| {
@@ -906,54 +935,20 @@ mod macos_backend {
 
     impl DesktopBackend for MacosBackend {
         fn health(&self) -> DesktopHealth {
-            // Check Accessibility permission state
             DesktopHealth {
-                healthy: true,
+                healthy: false,
                 platform: "macos",
-                permissions_granted: true,
-                details: "macOS Accessibility (AX) API initialized".into(),
+                permissions_granted: false,
+                details: "macOS AX backend is not linked in this build; no action will be reported as successful".into(),
                 recovery_instructions: Some(
-                    "If actions fail, grant Accessibility permission in System Settings > Privacy & Security > Accessibility."
+                    "Install a build with the native AX adapter, then grant Accessibility permission in System Settings > Privacy & Security > Accessibility."
                         .into(),
                 ),
             }
         }
 
         fn inspect(&self, _target_window: Option<&str>) -> Result<DesktopSnapshot, String> {
-            let gen = SNAPSHOT_GENERATION.fetch_add(1, Ordering::SeqCst);
-            let snapshot = DesktopSnapshot {
-                active_app: Some("Finder".into()),
-                windows: vec![WindowInfo {
-                    id: 1,
-                    title: "Desktop".into(),
-                    app: "Finder".into(),
-                    bounds: Some(ElementBounds {
-                        x: 0.0,
-                        y: 0.0,
-                        width: 1920.0,
-                        height: 1080.0,
-                    }),
-                    is_focused: true,
-                    is_minimized: false,
-                }],
-                focused_window: Some(WindowInfo {
-                    id: 1,
-                    title: "Desktop".into(),
-                    app: "Finder".into(),
-                    bounds: Some(ElementBounds {
-                        x: 0.0,
-                        y: 0.0,
-                        width: 1920.0,
-                        height: 1080.0,
-                    }),
-                    is_focused: true,
-                    is_minimized: false,
-                }),
-                elements: Vec::new(),
-                generation: gen,
-            };
-            cache_snapshot(snapshot.clone());
-            Ok(snapshot)
+            Err("desktop-backend-unavailable: native macOS AX adapter is not linked".into())
         }
 
         fn focus_window(
@@ -961,19 +956,7 @@ mod macos_backend {
             _window_id: Option<u64>,
             _title_or_app: Option<&str>,
         ) -> Result<WindowInfo, String> {
-            Ok(WindowInfo {
-                id: 1,
-                title: "Desktop".into(),
-                app: "Finder".into(),
-                bounds: Some(ElementBounds {
-                    x: 0.0,
-                    y: 0.0,
-                    width: 1920.0,
-                    height: 1080.0,
-                }),
-                is_focused: true,
-                is_minimized: false,
-            })
+            Err("desktop-backend-unavailable: native macOS AX focus is not linked".into())
         }
 
         fn close_window(
@@ -981,15 +964,15 @@ mod macos_backend {
             _window_id: Option<u64>,
             _title_or_app: Option<&str>,
         ) -> Result<(), String> {
-            Ok(())
+            Err("desktop-backend-unavailable: native macOS AX close is not linked".into())
         }
 
         fn invoke_element(&self, _element: &DesktopElement, _action: &str) -> Result<(), String> {
-            Ok(())
+            Err("desktop-backend-unavailable: native macOS AX invoke is not linked".into())
         }
 
         fn click_element(&self, _element: &DesktopElement) -> Result<(), String> {
-            Ok(())
+            Err("desktop-backend-unavailable: native macOS AX click is not linked".into())
         }
 
         fn type_element(
@@ -998,11 +981,11 @@ mod macos_backend {
             _text: &str,
             _clear_first: bool,
         ) -> Result<(), String> {
-            Ok(())
+            Err("desktop-backend-unavailable: native macOS AX value setting is not linked".into())
         }
 
         fn press_key(&self, _key: &str, _modifiers: &[&str]) -> Result<(), String> {
-            Ok(())
+            Err("desktop-backend-unavailable: native macOS keyboard adapter is not linked".into())
         }
 
         fn scroll_element(
@@ -1011,11 +994,11 @@ mod macos_backend {
             _direction: &str,
             _amount: f64,
         ) -> Result<(), String> {
-            Ok(())
+            Err("desktop-backend-unavailable: native macOS AX scroll is not linked".into())
         }
 
-        fn read_element(&self, element: &DesktopElement) -> Result<String, String> {
-            Ok(element.name.clone())
+        fn read_element(&self, _element: &DesktopElement) -> Result<String, String> {
+            Err("desktop-backend-unavailable: native macOS AX read is not linked".into())
         }
     }
 }
@@ -1039,40 +1022,27 @@ mod linux_backend {
                 || std::env::var("AT_SPI_BUS_ADDRESS").is_ok();
 
             DesktopHealth {
-                healthy: at_spi_present,
+                healthy: false,
                 platform: "linux",
                 permissions_granted: at_spi_present,
                 details: if at_spi_present {
-                    "Linux AT-SPI2 accessibility bus active".into()
+                    "Linux AT-SPI2 bus is active, but the native semantic adapter is not linked in this build".into()
                 } else {
-                    "Linux AT-SPI2 accessibility bus not detected".into()
+                    "Linux AT-SPI2 bus is not detected and the native semantic adapter is not linked".into()
                 },
                 recovery_instructions: Some(
-                    "Enable AT-SPI2 with: gsettings set org.gnome.desktop.interface toolkit-accessibility true"
+                    "Install a build with the native AT-SPI adapter; if needed enable accessibility with: gsettings set org.gnome.desktop.interface toolkit-accessibility true"
                         .into(),
                 ),
             }
         }
 
         fn inspect(&self, _target_window: Option<&str>) -> Result<DesktopSnapshot, String> {
-            let h = self.health();
-            if !h.healthy {
-                return Err(format!(
-                    "unsupported-platform: {}. Recovery: {}",
-                    h.details,
-                    h.recovery_instructions.unwrap_or_default()
-                ));
-            }
-            let gen = SNAPSHOT_GENERATION.fetch_add(1, Ordering::SeqCst);
-            let snapshot = DesktopSnapshot {
-                active_app: None,
-                windows: Vec::new(),
-                focused_window: None,
-                elements: Vec::new(),
-                generation: gen,
-            };
-            cache_snapshot(snapshot.clone());
-            Ok(snapshot)
+            let health = self.health();
+            Err(format!(
+                "desktop-backend-unavailable: AT-SPI semantic adapter is not linked. Recovery: {}",
+                health.recovery_instructions.unwrap_or_default()
+            ))
         }
 
         fn focus_window(
@@ -1121,8 +1091,8 @@ mod linux_backend {
             Err("unsupported-platform: AT-SPI scroll not supported in headless mode".into())
         }
 
-        fn read_element(&self, element: &DesktopElement) -> Result<String, String> {
-            Ok(element.name.clone())
+        fn read_element(&self, _element: &DesktopElement) -> Result<String, String> {
+            Err("desktop-backend-unavailable: AT-SPI semantic read adapter is not linked".into())
         }
     }
 }
@@ -1147,10 +1117,18 @@ mod stub_backend {
         fn inspect(&self, _target_window: Option<&str>) -> Result<DesktopSnapshot, String> {
             Err("unsupported-platform: OS accessibility backend not available".into())
         }
-        fn focus_window(&self, _window_id: Option<u64>, _title_or_app: Option<&str>) -> Result<WindowInfo, String> {
+        fn focus_window(
+            &self,
+            _window_id: Option<u64>,
+            _title_or_app: Option<&str>,
+        ) -> Result<WindowInfo, String> {
             Err("unsupported-platform".into())
         }
-        fn close_window(&self, _window_id: Option<u64>, _title_or_app: Option<&str>) -> Result<(), String> {
+        fn close_window(
+            &self,
+            _window_id: Option<u64>,
+            _title_or_app: Option<&str>,
+        ) -> Result<(), String> {
             Err("unsupported-platform".into())
         }
         fn invoke_element(&self, _element: &DesktopElement, _action: &str) -> Result<(), String> {
@@ -1159,13 +1137,23 @@ mod stub_backend {
         fn click_element(&self, _element: &DesktopElement) -> Result<(), String> {
             Err("unsupported-platform".into())
         }
-        fn type_element(&self, _element: &DesktopElement, _text: &str, _clear_first: bool) -> Result<(), String> {
+        fn type_element(
+            &self,
+            _element: &DesktopElement,
+            _text: &str,
+            _clear_first: bool,
+        ) -> Result<(), String> {
             Err("unsupported-platform".into())
         }
         fn press_key(&self, _key: &str, _modifiers: &[&str]) -> Result<(), String> {
             Err("unsupported-platform".into())
         }
-        fn scroll_element(&self, _element: &DesktopElement, _direction: &str, _amount: f64) -> Result<(), String> {
+        fn scroll_element(
+            &self,
+            _element: &DesktopElement,
+            _direction: &str,
+            _amount: f64,
+        ) -> Result<(), String> {
             Err("unsupported-platform".into())
         }
         fn read_element(&self, element: &DesktopElement) -> Result<String, String> {
@@ -1235,86 +1223,83 @@ pub fn verify_contract(contract: &VerificationContract) -> Result<(), String> {
         let snapshot_res = backend.inspect(None);
 
         match snapshot_res {
-            Ok(snapshot) => {
-                match contract.kind.as_str() {
-                    "window-focused" => {
-                        let expected_title = contract
-                            .expect
-                            .as_str()
-                            .or_else(|| contract.selector.as_deref());
-                        if let Some(exp) = expected_title {
-                            if let Some(fw) = &snapshot.focused_window {
-                                if fw.title.to_lowercase().contains(&exp.to_lowercase())
-                                    || fw.app.to_lowercase().contains(&exp.to_lowercase())
-                                {
-                                    return Ok(());
-                                }
-                            }
-                        }
-                    }
-                    "window-closed" => {
-                        let target = contract
-                            .expect
-                            .as_str()
-                            .or_else(|| contract.selector.as_deref());
-                        if let Some(exp) = target {
-                            let exp_lower = exp.to_lowercase();
-                            let exists = snapshot.windows.iter().any(|w| {
-                                w.title.to_lowercase().contains(&exp_lower)
-                                    || w.app.to_lowercase().contains(&exp_lower)
-                            });
-                            if !exists {
+            Ok(snapshot) => match contract.kind.as_str() {
+                "window-focused" => {
+                    let expected_title = contract
+                        .expect
+                        .as_str()
+                        .or_else(|| contract.selector.as_deref());
+                    if let Some(exp) = expected_title {
+                        if let Some(fw) = &snapshot.focused_window {
+                            if fw.title.to_lowercase().contains(&exp.to_lowercase())
+                                || fw.app.to_lowercase().contains(&exp.to_lowercase())
+                            {
                                 return Ok(());
                             }
                         }
                     }
-                    "desktop-element-state" | "element-state" => {
-                        if let Some(sel_str) = &contract.selector {
-                            let selector: Result<ElementSelector, _> =
-                                serde_json::from_str(sel_str);
-                            let sel = match selector {
-                                Ok(s) => s,
-                                Err(_) => ElementSelector {
-                                    name: Some(sel_str.clone()),
-                                    ..Default::default()
-                                },
-                            };
-                            if let Ok(el) = resolve_selector(&snapshot, &sel) {
-                                let mut matches_all = true;
+                }
+                "window-closed" => {
+                    let target = contract
+                        .expect
+                        .as_str()
+                        .or_else(|| contract.selector.as_deref());
+                    if let Some(exp) = target {
+                        let exp_lower = exp.to_lowercase();
+                        let exists = snapshot.windows.iter().any(|w| {
+                            w.title.to_lowercase().contains(&exp_lower)
+                                || w.app.to_lowercase().contains(&exp_lower)
+                        });
+                        if !exists {
+                            return Ok(());
+                        }
+                    }
+                }
+                "desktop-element-state" | "element-state" => {
+                    if let Some(sel_str) = &contract.selector {
+                        let selector: Result<ElementSelector, _> = serde_json::from_str(sel_str);
+                        let sel = match selector {
+                            Ok(s) => s,
+                            Err(_) => ElementSelector {
+                                name: Some(sel_str.clone()),
+                                ..Default::default()
+                            },
+                        };
+                        if let Ok(el) = resolve_selector(&snapshot, &sel) {
+                            let mut matches_all = true;
 
-                                if let Some(expected_val) = contract.expect.get("value") {
-                                    let current_val = el.value.as_deref().unwrap_or("");
-                                    if expected_val.as_str() != Some(current_val) {
-                                        matches_all = false;
-                                    }
+                            if let Some(expected_val) = contract.expect.get("value") {
+                                let current_val = el.value.as_deref().unwrap_or("");
+                                if expected_val.as_str() != Some(current_val) {
+                                    matches_all = false;
                                 }
+                            }
 
-                                if let Some(expected_enabled) = contract.expect.get("enabled") {
-                                    if expected_enabled.as_bool() != Some(el.enabled) {
-                                        matches_all = false;
-                                    }
+                            if let Some(expected_enabled) = contract.expect.get("enabled") {
+                                if expected_enabled.as_bool() != Some(el.enabled) {
+                                    matches_all = false;
                                 }
+                            }
 
-                                if let Some(expected_focused) = contract.expect.get("focused") {
-                                    if expected_focused.as_bool() != Some(el.focused) {
-                                        matches_all = false;
-                                    }
+                            if let Some(expected_focused) = contract.expect.get("focused") {
+                                if expected_focused.as_bool() != Some(el.focused) {
+                                    matches_all = false;
                                 }
+                            }
 
-                                if matches_all {
-                                    return Ok(());
-                                }
+                            if matches_all {
+                                return Ok(());
                             }
                         }
                     }
-                    _ => {
-                        return Err(format!(
-                            "unverifiable: unsupported verification kind '{}'",
-                            contract.kind
-                        ));
-                    }
                 }
-            }
+                _ => {
+                    return Err(format!(
+                        "unverifiable: unsupported verification kind '{}'",
+                        contract.kind
+                    ));
+                }
+            },
             Err(e) => {
                 // If inspection fails during polling, keep trying until timeout
                 if start.elapsed() >= timeout {

@@ -33,11 +33,11 @@ all provider integrations retrieve secrets only through SecretStore.
 
 ## Implementation Notes
 
-### 1. Backend Choice: OS-Backed Secure Vault (`OsVaultSecretStore`)
-- Implemented in `src-tauri/src/secrets.rs`.
-- Design choice: Implemented an OS-level per-user filesystem vault (permissions `0o700` on directories and `0o600` on payload files under Unix, user-profile ACL restricted on Windows) rather than Tauri Stronghold (which imposes password-prompt UX friction) or system C-dependencies like `libsecret` (which fails in headless Linux CI environments).
-- Supports atomic key rotation: setting a new key for an existing provider replaces payload bytes, updates `updated_at_ts`, and removes the previous payload file.
-- In-memory store (`InMemorySecretStore`) provided for isolated unit testing.
+### 1. Backend Choice: OS Credential Vault (`OsVaultSecretStore`)
+- Implemented in `src-tauri/src/secrets.rs` through the `keyring` crate's native Windows Credential Manager, macOS Keychain, and Linux Secret Service backends.
+- Secret payload bytes are written only to the OS credential vault. The app-data directory stores non-secret metadata needed for listing and rotation.
+- Rotation writes the new credential and metadata before deleting the prior credential, avoiding data loss if metadata persistence fails.
+- In-memory store (`InMemorySecretStore`) is retained for isolated unit testing.
 
 ### 2. Opaque Secret References in Settings
 - `AppSettings` stores only `planner_secret_ref: Option<SecretRef>`.
@@ -62,8 +62,11 @@ all provider integrations retrieve secrets only through SecretStore.
 - `process_supervisor.rs` automatically strips all provider API keys (`REFLEXDESK_PLANNER_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, etc.) from child process environments spawned as `OwnershipClass::OwnedSession`.
 
 ### 7. Memory Zeroization
-- `SecretBytes` buffer implements `Drop` using volatile writes and memory fences to ensure sensitive data is wiped from RAM pages when released.
+- `SecretBytes` wraps `zeroize::Zeroizing<Vec<u8>>`; sensitive payload buffers are cleared on drop without a custom optimizer-sensitive wipe.
 
 ### 8. Verification
-- Node test suite `tests/secrets.test.mjs` verifies plaintext detection, nested token rejection, opaque reference preservation, and lack of credentials in settings or localStorage.
-- Static validation `scripts/validate.mjs` passes.
+- Rust tests cover in-memory lifecycle, redacted formatting, plaintext detection,
+  and quarantine of legacy plaintext payload directories without importing them.
+- The native OS-vault lifecycle test is intentionally ignored in the headless
+  unit suite and remains an acceptance requirement in interactive platform CI.
+- Node tests verify settings/localStorage credential exclusion and migration guards.

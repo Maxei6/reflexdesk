@@ -24,6 +24,19 @@ use std::{
 };
 use tauri::{AppHandle, Manager};
 
+fn find_executable_on_path(names: &[&str]) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    for directory in std::env::split_paths(&path) {
+        for name in names {
+            let candidate = directory.join(name);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
 // ---------------------------------------------------------------------------
 // Candidate Action & Context definitions
 // ---------------------------------------------------------------------------
@@ -50,7 +63,12 @@ pub struct ReflexContext {
 
 impl ReflexContext {
     /// Create a new reflex context with automatic text normalization and semantic state hashing.
-    pub fn new(text: &str, session_id: &str, active_app: Option<&str>, language: Option<&str>) -> Self {
+    pub fn new(
+        text: &str,
+        session_id: &str,
+        active_app: Option<&str>,
+        language: Option<&str>,
+    ) -> Self {
         let clean = text.trim();
         let normalized = clean.to_lowercase();
         let hash = compute_semantic_hash(&normalized, active_app, language);
@@ -66,7 +84,11 @@ impl ReflexContext {
 }
 
 /// Compute a deterministic 64-bit hex hash representing the semantic context.
-pub fn compute_semantic_hash(normalized_text: &str, active_app: Option<&str>, language: Option<&str>) -> String {
+pub fn compute_semantic_hash(
+    normalized_text: &str,
+    active_app: Option<&str>,
+    language: Option<&str>,
+) -> String {
     // 64-bit FNV-1a hash
     const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
     const FNV_PRIME: u64 = 0x100000001b3;
@@ -171,12 +193,21 @@ impl ReflexCache {
         }
     }
 
-    pub fn get(&self, normalized_text: &str, semantic_state_hash: &str) -> Option<(String, f32, &'static str, serde_json::Value)> {
+    pub fn get(
+        &self,
+        normalized_text: &str,
+        semantic_state_hash: &str,
+    ) -> Option<(String, f32, &'static str, serde_json::Value)> {
         let key = (normalized_text.to_string(), semantic_state_hash.to_string());
         let mut guard = self.entries.lock().ok()?;
         if let Some(entry) = guard.get(&key) {
             if entry.inserted_at.elapsed() <= self.ttl {
-                return Some((entry.choice.clone(), entry.confidence, entry.provider, entry.args.clone()));
+                return Some((
+                    entry.choice.clone(),
+                    entry.confidence,
+                    entry.provider,
+                    entry.args.clone(),
+                ));
             }
         }
         guard.remove(&key);
@@ -259,12 +290,23 @@ impl DeterministicReflex {
         }
 
         // URL opening (Multilingual: open, go to, vai su, ir a, aller sur, gehe zu)
-        for prefix in ["open ", "go to ", "vai su ", "ir a ", "aller sur ", "gehe zu "] {
+        for prefix in [
+            "open ",
+            "go to ",
+            "vai su ",
+            "ir a ",
+            "aller sur ",
+            "gehe zu ",
+        ] {
             if lower.starts_with(prefix) {
                 let rest = raw.trim()[prefix.len()..].trim();
                 if rest.starts_with("http://") || rest.starts_with("https://") {
                     let url = rest.split_whitespace().next().unwrap_or(rest);
-                    return Some(("browser.open".into(), serde_json::json!({ "url": url }), 0.99));
+                    return Some((
+                        "browser.open".into(),
+                        serde_json::json!({ "url": url }),
+                        0.99,
+                    ));
                 }
             }
         }
@@ -288,15 +330,19 @@ impl DeterministicReflex {
             if lower.starts_with(prefix) {
                 let query = raw.trim()[prefix.len()..].trim();
                 if !query.is_empty() {
-                    return Some(("browser.search".into(), serde_json::json!({ "query": query }), 0.98));
+                    return Some((
+                        "browser.search".into(),
+                        serde_json::json!({ "query": query }),
+                        0.98,
+                    ));
                 }
             }
         }
 
         // App launch (Multilingual: open, launch, start, apri, lancia, avvia, abrir, iniciar, ouvrir, lancer, öffne, starte)
         let app_prefixes = [
-            "open ", "launch ", "start ", "apri ", "lancia ", "avvia ", "abrir ", "iniciar ", "ouvrir ",
-            "lancer ", "öffne ", "starte ",
+            "open ", "launch ", "start ", "apri ", "lancia ", "avvia ", "abrir ", "iniciar ",
+            "ouvrir ", "lancer ", "öffne ", "starte ",
         ];
         let known_apps = [
             ("spotify", "spotify"),
@@ -313,10 +359,17 @@ impl DeterministicReflex {
 
         for prefix in app_prefixes {
             if lower.starts_with(prefix) {
-                let target = lower[prefix.len()..].trim().trim_end_matches(['.', '!', '?']).trim();
+                let target = lower[prefix.len()..]
+                    .trim()
+                    .trim_end_matches(['.', '!', '?'])
+                    .trim();
                 for (alias, canonical) in known_apps {
                     if target == alias {
-                        return Some(("app.open".into(), serde_json::json!({ "app": canonical }), 0.97));
+                        return Some((
+                            "app.open".into(),
+                            serde_json::json!({ "app": canonical }),
+                            0.97,
+                        ));
                     }
                 }
             }
@@ -371,6 +424,11 @@ impl ReflexProvider for DeterministicReflex {
     }
 }
 
+/// The built-in deterministic router is always available without model or network dependencies.
+pub fn health() -> bool {
+    DeterministicReflex::new().health()
+}
+
 // ---------------------------------------------------------------------------
 // Compact Offline Heuristic Classifier
 // ---------------------------------------------------------------------------
@@ -403,40 +461,99 @@ impl ReflexProvider for CompactReflex {
 
         // Browser search cues
         let search_cues = [
-            "look up", "find", "search", "google", "documentation", "guide", "tutorial", "weather", "forecast",
-            "news", "cerca", "trova", "guida", "previsioni", "buscar", "noticias", "recetas", "chercher",
-            "trouver", "horaires", "suche", "anleitung",
+            "look up",
+            "find",
+            "search",
+            "google",
+            "documentation",
+            "guide",
+            "tutorial",
+            "weather",
+            "forecast",
+            "news",
+            "cerca",
+            "trova",
+            "guida",
+            "previsioni",
+            "buscar",
+            "noticias",
+            "recetas",
+            "chercher",
+            "trouver",
+            "horaires",
+            "suche",
+            "anleitung",
+            "rechercher",
+            "tutoriel",
+            "meteo",
+            "documentacion",
+            "dokumentation",
+            "anleitungen",
         ];
         for cue in search_cues {
             if lower.contains(cue) {
-                *scores.entry("browser.search").or_default() += 0.35;
+                *scores.entry("browser.search").or_default() += 0.38;
             }
         }
 
         // Harness coding cues
         let harness_cues = [
-            "code", "script", "refactor", "implement", "feature", "fix bug", "unit test", "program", "backend",
-            "database", "programmare", "funzione", "programar", "servicio", "coder", "module", "programmiere",
+            "code",
+            "script",
+            "refactor",
+            "implement",
+            "feature",
+            "fix bug",
+            "unit test",
+            "program",
+            "backend",
+            "database",
+            "programmare",
+            "funzione",
+            "programar",
+            "servicio",
+            "coder",
+            "module",
+            "programmiere",
+            "coding",
         ];
         for cue in harness_cues {
             if lower.contains(cue) {
-                *scores.entry("harness.start").or_default() += 0.38;
+                *scores.entry("harness.start").or_default() += 0.42;
             }
         }
 
         // App open cues
         let app_cues = [
-            "open", "launch", "start", "calculator", "editor", "music", "apri", "lancia", "avvia", "abrir",
-            "iniciar", "ouvrir", "lancer", "öffne", "starte", "app",
+            "open",
+            "launch",
+            "start",
+            "calculator",
+            "editor",
+            "music",
+            "apri",
+            "lancia",
+            "avvia",
+            "abrir",
+            "iniciar",
+            "ouvrir",
+            "lancer",
+            "öffne",
+            "starte",
+            "app",
         ];
         for cue in app_cues {
             if lower.contains(cue) {
-                *scores.entry("app.open").or_default() += 0.28;
+                *scores.entry("app.open").or_default() += 0.38;
             }
         }
 
         // URL cues
-        if lower.contains("http://") || lower.contains("https://") || lower.contains(".com") || lower.contains(".org") {
+        if lower.contains("http://")
+            || lower.contains("https://")
+            || lower.contains(".com")
+            || lower.contains(".org")
+        {
             *scores.entry("browser.open").or_default() += 0.50;
         }
 
@@ -513,19 +630,15 @@ impl LayaSupervisor {
             }
         }
 
-        // Probe system PATH
         #[cfg(target_os = "windows")]
         {
-            if let Ok(path) = which::which("python") {
+            if let Some(path) = find_executable_on_path(&["python.exe", "python"]) {
                 return Some(path);
             }
         }
         #[cfg(not(target_os = "windows"))]
         {
-            if let Ok(path) = which::which("python3") {
-                return Some(path);
-            }
-            if let Ok(path) = which::which("python") {
+            if let Some(path) = find_executable_on_path(&["python3", "python"]) {
                 return Some(path);
             }
         }
@@ -538,7 +651,12 @@ impl LayaSupervisor {
         let mut candidates = Vec::new();
         if let Ok(resource_dir) = app.path().resource_dir() {
             candidates.push(resource_dir.join("sidecar").join("laya_service.py"));
-            candidates.push(resource_dir.join("resources").join("sidecar").join("laya_service.py"));
+            candidates.push(
+                resource_dir
+                    .join("resources")
+                    .join("sidecar")
+                    .join("laya_service.py"),
+            );
         }
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         if let Some(parent) = manifest_dir.parent() {
@@ -630,7 +748,11 @@ impl LayaSupervisor {
     }
 
     /// Start or restart the supervised Laya sidecar process with ephemeral bearer token.
-    pub fn start(&self, app: &AppHandle, supervisor: &ProcessSupervisor) -> Result<LocalLayaEndpoint, String> {
+    pub fn start(
+        &self,
+        app: &AppHandle,
+        supervisor: &ProcessSupervisor,
+    ) -> Result<LocalLayaEndpoint, String> {
         if self.health() {
             if let Some(ep) = self.endpoint_snapshot() {
                 return Ok(ep);
@@ -690,8 +812,14 @@ impl LayaSupervisor {
             return Err("Laya start aborted: shutting down".to_string());
         }
 
-        *self.endpoint.lock().map_err(|_| "Laya endpoint lock poisoned".to_string())? = Some(endpoint.clone());
-        *self.process_id.lock().map_err(|_| "Laya process lock poisoned".to_string())? = Some(proc_id);
+        *self
+            .endpoint
+            .lock()
+            .map_err(|_| "Laya endpoint lock poisoned".to_string())? = Some(endpoint.clone());
+        *self
+            .process_id
+            .lock()
+            .map_err(|_| "Laya process lock poisoned".to_string())? = Some(proc_id);
 
         // Wait up to 3 seconds for health check to pass
         let start_time = Instant::now();
@@ -718,7 +846,12 @@ impl LayaSupervisor {
     }
 
     /// Watchdog auto-restart helper.
-    pub fn tick_watchdog(&self, app: &AppHandle, supervisor: &ProcessSupervisor, enabled: bool) -> bool {
+    pub fn tick_watchdog(
+        &self,
+        app: &AppHandle,
+        supervisor: &ProcessSupervisor,
+        enabled: bool,
+    ) -> bool {
         if !enabled || self.shutting_down.load(Ordering::SeqCst) {
             return false;
         }
@@ -773,7 +906,10 @@ impl ReflexProvider for LayaReflex {
             .map(|c| c.get(&url));
 
         if let (Some(r), Some(token)) = (&mut req, &self.bearer_token) {
-            *r = r.try_clone().unwrap().header("Authorization", format!("Bearer {token}"));
+            *r = r
+                .try_clone()
+                .unwrap()
+                .header("Authorization", format!("Bearer {token}"));
         }
 
         req.and_then(|r| r.send().ok())
@@ -817,10 +953,16 @@ impl ReflexProvider for LayaReflex {
         // Format 2: {"choice": "app.open", "confidence": 0.95}
         let (choice, confidence) = if let Some(intent) = payload.get("intent") {
             let c = intent.get("choice").and_then(serde_json::Value::as_str)?;
-            let conf = intent.get("confidence").and_then(serde_json::Value::as_f64).unwrap_or(0.0) as f32;
+            let conf = intent
+                .get("confidence")
+                .and_then(serde_json::Value::as_f64)
+                .unwrap_or(0.0) as f32;
             (c, conf)
         } else if let Some(c) = payload.get("choice").and_then(serde_json::Value::as_str) {
-            let conf = payload.get("confidence").and_then(serde_json::Value::as_f64).unwrap_or(0.0) as f32;
+            let conf = payload
+                .get("confidence")
+                .and_then(serde_json::Value::as_f64)
+                .unwrap_or(0.0) as f32;
             (c, conf)
         } else {
             return None;
@@ -883,7 +1025,10 @@ impl ReflexEngine {
         let candidates = standard_candidates();
 
         // 1. Cache lookup
-        if let Some((choice, conf, prov, args)) = self.cache.get(&ctx.normalized_text, &ctx.semantic_state_hash) {
+        if let Some((choice, conf, prov, args)) = self
+            .cache
+            .get(&ctx.normalized_text, &ctx.semantic_state_hash)
+        {
             return ReflexDecision {
                 action: Some(choice),
                 args,
@@ -1014,7 +1159,10 @@ struct CorpusItem {
 }
 
 /// Run a benchmark against a labeled JSONL corpus.
-pub fn run_corpus_benchmark(corpus_jsonl: &str, laya_client: Option<&dyn ReflexProvider>) -> BenchmarkReport {
+pub fn run_corpus_benchmark(
+    corpus_jsonl: &str,
+    laya_client: Option<&dyn ReflexProvider>,
+) -> BenchmarkReport {
     let mut items: Vec<CorpusItem> = Vec::new();
     for line in corpus_jsonl.lines() {
         let trimmed = line.trim();
@@ -1115,14 +1263,27 @@ pub fn run_corpus_benchmark(corpus_jsonl: &str, laya_client: Option<&dyn ReflexP
     det_latencies.sort_unstable();
     laya_latencies.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 
-    let det_p50 = det_latencies.get(det_latencies.len() * 50 / 100).copied().unwrap_or(0);
-    let det_p95 = det_latencies.get(det_latencies.len() * 95 / 100).copied().unwrap_or(0);
+    let det_p50 = det_latencies
+        .get(det_latencies.len() * 50 / 100)
+        .copied()
+        .unwrap_or(0);
+    let det_p95 = det_latencies
+        .get(det_latencies.len() * 95 / 100)
+        .copied()
+        .unwrap_or(0);
 
-    let laya_p50 = laya_latencies.get(laya_latencies.len() * 50 / 100).copied().unwrap_or(0.0);
-    let laya_p95 = laya_latencies.get(laya_latencies.len() * 95 / 100).copied().unwrap_or(0.0);
+    let laya_p50 = laya_latencies
+        .get(laya_latencies.len() * 50 / 100)
+        .copied()
+        .unwrap_or(0.0);
+    let laya_p95 = laya_latencies
+        .get(laya_latencies.len() * 95 / 100)
+        .copied()
+        .unwrap_or(0.0);
 
     let ambig_gain = if ambig_total > 0 {
-        ((laya_ambig_resolved as f32 - deterministic_ambig_resolved as f32) / ambig_total as f32) * 100.0
+        ((laya_ambig_resolved as f32 - deterministic_ambig_resolved as f32) / ambig_total as f32)
+            * 100.0
     } else {
         0.0
     };
@@ -1189,32 +1350,56 @@ mod tests {
 
         // Control
         let ctx = ReflexContext::new("Hello ReflexDesk", "s1", None, None);
-        assert_eq!(router.route(&candidates, &ctx), Some(("reflex.ping".into(), 0.99)));
+        assert_eq!(
+            router.route(&candidates, &ctx),
+            Some(("reflex.ping".into(), 0.99))
+        );
 
         let ctx = ReflexContext::new("stop listening", "s2", None, None);
-        assert_eq!(router.route(&candidates, &ctx), Some(("voice.stop".into(), 0.99)));
+        assert_eq!(
+            router.route(&candidates, &ctx),
+            Some(("voice.stop".into(), 0.99))
+        );
 
         // App launch
         let ctx = ReflexContext::new("open Spotify", "s3", None, None);
-        assert_eq!(router.route(&candidates, &ctx), Some(("app.open".into(), 0.97)));
+        assert_eq!(
+            router.route(&candidates, &ctx),
+            Some(("app.open".into(), 0.97))
+        );
 
         let ctx = ReflexContext::new("apri Chrome", "s4", None, Some("it"));
-        assert_eq!(router.route(&candidates, &ctx), Some(("app.open".into(), 0.97)));
+        assert_eq!(
+            router.route(&candidates, &ctx),
+            Some(("app.open".into(), 0.97))
+        );
 
         // Web search
         let ctx = ReflexContext::new("search for rust programming language", "s5", None, None);
-        assert_eq!(router.route(&candidates, &ctx), Some(("browser.search".into(), 0.98)));
+        assert_eq!(
+            router.route(&candidates, &ctx),
+            Some(("browser.search".into(), 0.98))
+        );
 
         let ctx = ReflexContext::new("cerca su google ristoranti Roma", "s6", None, Some("it"));
-        assert_eq!(router.route(&candidates, &ctx), Some(("browser.search".into(), 0.98)));
+        assert_eq!(
+            router.route(&candidates, &ctx),
+            Some(("browser.search".into(), 0.98))
+        );
 
         // URL opening
         let ctx = ReflexContext::new("go to https://reflexdesk.io", "s7", None, None);
-        assert_eq!(router.route(&candidates, &ctx), Some(("browser.open".into(), 0.99)));
+        assert_eq!(
+            router.route(&candidates, &ctx),
+            Some(("browser.open".into(), 0.99))
+        );
 
         // Harness
         let ctx = ReflexContext::new("ask codex to fix the test", "s8", None, None);
-        assert_eq!(router.route(&candidates, &ctx), Some(("harness.start".into(), 0.90)));
+        assert_eq!(
+            router.route(&candidates, &ctx),
+            Some(("harness.start".into(), 0.90))
+        );
     }
 
     #[test]
@@ -1242,7 +1427,14 @@ mod tests {
     #[test]
     fn test_reflex_cache_insertion_and_expiry() {
         let cache = ReflexCache::new(Duration::from_millis(50));
-        cache.insert("test query", "hash1", "app.open", 0.95, "deterministic", serde_json::json!({}));
+        cache.insert(
+            "test query",
+            "hash1",
+            "app.open",
+            0.95,
+            "deterministic",
+            serde_json::json!({}),
+        );
 
         let hit = cache.get("test query", "hash1");
         assert!(hit.is_some());
@@ -1258,7 +1450,7 @@ mod tests {
 
     #[test]
     fn test_benchmark_runner_on_corpus() {
-        let fixture = include_str!("../../../tests/fixtures/reflex/corpus.jsonl");
+        let fixture = include_str!("../../tests/fixtures/reflex/corpus.jsonl");
         let report = run_corpus_benchmark(fixture, None);
 
         assert!(report.total_samples >= 40);

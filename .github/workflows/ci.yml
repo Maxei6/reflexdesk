@@ -42,13 +42,8 @@ jobs:
       - run: npm run prepare:icons
       - run: npm run prepare:stt
       - uses: dtolnay/rust-toolchain@a54c7fe9363c9033d2733882807b013e93601a10 # stable
-      # No Cargo.lock can be committed until a Rust toolchain is available to
-      # the implementing session; generate it here so --locked still enforces
-      # reproducibility within CI. Replace with a committed lockfile check
-      # once toolchains exist locally (plan 07 follow-up).
-      - run: cargo generate-lockfile --manifest-path src-tauri/Cargo.toml
       - run: cargo check --locked --manifest-path src-tauri/Cargo.toml
-      - run: cargo test --manifest-path src-tauri/Cargo.toml
+      - run: cargo test --locked --manifest-path src-tauri/Cargo.toml
 
   npm-audit:
     runs-on: ubuntu-latest

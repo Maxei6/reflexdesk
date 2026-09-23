@@ -7,6 +7,7 @@ const BRIDGE_WS_URL = `ws://127.0.0.1:${DEFAULT_PORT}/browser-bridge`;
 let socket = null;
 let reconnectTimer = null;
 let pairingSecret = null;
+const seenNonces = new Set();
 
 // Load persisted pairing secret from chrome storage
 chrome.storage.local.get(["pairingSecret"], (res) => {
@@ -43,6 +44,8 @@ function connectToDesktop() {
       try {
         const msg = JSON.parse(event.data);
         const response = await handleDesktopMessage(msg);
+        response.v = 1;
+        response.pairing = pairingSecret || "";
         socket.send(JSON.stringify(response));
       } catch (err) {
         console.error("[ReflexDesk Extension] Error handling message:", err);
@@ -84,6 +87,28 @@ async function getTargetTab(tabId) {
 }
 
 async function handleDesktopMessage(envelope) {
+  if (envelope.v !== 1 || !pairingSecret || envelope.pairing !== pairingSecret) {
+    return {
+      v: 1,
+      session: envelope.session || null,
+      nonce: envelope.nonce || null,
+      pairing: pairingSecret || "",
+      success: false,
+      error: "authentication-failed"
+    };
+  }
+  if (typeof envelope.nonce !== "string" || envelope.nonce.length < 16 || seenNonces.has(envelope.nonce)) {
+    return {
+      v: 1,
+      session: envelope.session || null,
+      nonce: envelope.nonce || null,
+      pairing: pairingSecret || "",
+      success: false,
+      error: "nonce-invalid-or-replayed"
+    };
+  }
+  if (seenNonces.size >= 4096) seenNonces.clear();
+  seenNonces.add(envelope.nonce);
   const { action, args, session, nonce, tabId } = envelope;
 
   // Handle browser lifecycle actions

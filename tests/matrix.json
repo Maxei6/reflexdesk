@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "generated_at": "2026-09-22T00:00:00Z",
+  "generated_at": null,
   "targets": {
     "completion_rate_target": 0.98,
     "false_action_rate_target": 0.01,
@@ -10,33 +10,33 @@
   "platforms": {
     "windows": {
       "platform": "windows-x86_64",
-      "completion_rate": 0.992,
-      "false_action_rate": 0.003,
-      "p50_cancel_latency_ms": 42,
-      "p95_cancel_latency_ms": 115,
-      "crash_free_soak_hours": 72,
-      "fault_injection_resilience": 1.0,
-      "status": "PASS"
+      "completion_rate": null,
+      "false_action_rate": null,
+      "p50_cancel_latency_ms": null,
+      "p95_cancel_latency_ms": null,
+      "crash_free_soak_hours": null,
+      "fault_injection_resilience": null,
+      "status": "UNMEASURED"
     },
     "macos": {
       "platform": "macos-aarch64",
-      "completion_rate": 0.989,
-      "false_action_rate": 0.004,
-      "p50_cancel_latency_ms": 48,
-      "p95_cancel_latency_ms": 128,
-      "crash_free_soak_hours": 72,
-      "fault_injection_resilience": 1.0,
-      "status": "PASS"
+      "completion_rate": null,
+      "false_action_rate": null,
+      "p50_cancel_latency_ms": null,
+      "p95_cancel_latency_ms": null,
+      "crash_free_soak_hours": null,
+      "fault_injection_resilience": null,
+      "status": "UNMEASURED"
     },
     "linux": {
       "platform": "linux-x86_64",
-      "completion_rate": 0.985,
-      "false_action_rate": 0.005,
-      "p50_cancel_latency_ms": 55,
-      "p95_cancel_latency_ms": 140,
-      "crash_free_soak_hours": 72,
-      "fault_injection_resilience": 1.0,
-      "status": "PASS"
+      "completion_rate": null,
+      "false_action_rate": null,
+      "p50_cancel_latency_ms": null,
+      "p95_cancel_latency_ms": null,
+      "crash_free_soak_hours": null,
+      "fault_injection_resilience": null,
+      "status": "UNMEASURED"
     }
   },
   "test_suites": {

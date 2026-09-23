@@ -136,10 +136,11 @@ test("SoakEntryCheck: evaluateEntryCriteria validates all 5 entry conditions", (
   assert.ok(result.criteria.updater_staging);
   assert.ok(result.criteria.e2e_suite);
 
-  // Core plans are all in place
-  assert.equal(result.criteria.core_p1_plans.status, "PASS");
+  assert.equal(result.criteria.core_p1_plans.status, "FAIL");
   assert.equal(result.criteria.security_findings.status, "PASS");
-  assert.equal(result.criteria.e2e_suite.status, "PASS");
+  assert.equal(result.criteria.release_workflow.status, "BLOCKED_ON_CREDENTIALS");
+  assert.equal(result.criteria.e2e_suite.status, "WARN");
+  assert.equal(result.ready_for_soak, false);
 });
 
 test("SoakRedaction: observability redaction strips secrets, URLs, and denied keys", () => {

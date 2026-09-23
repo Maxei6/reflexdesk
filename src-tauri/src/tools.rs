@@ -1,7 +1,6 @@
+use crate::process_supervisor::{OwnershipClass, ProcessSpec, ProcessSupervisor};
 use serde::Serialize;
 use serde_json::Value;
-use std::process::Command;
-use crate::process_supervisor::ProcessSupervisor;
 
 #[derive(Serialize)]
 pub struct ToolResult {
@@ -9,64 +8,12 @@ pub struct ToolResult {
     pub message: String,
 }
 
-fn spawn_detached(program: &str, args: &[&str]) -> Result<(), String> {
-    Command::new(program).args(args).spawn().map(|_| ()).map_err(|e| e.to_string())
-}
-
-fn open_external(target: &str) -> Result<(), String> {
-    // Structural validation first: http(s) only, no credentials, no
-    // control/whitespace/non-URL characters.
-    let target = crate::security::sanitize_open_external(target)?;
-    // Windows MUST NOT go through `cmd /C start` (string interpretation =
-    // injection surface). `ShellExecuteW` takes the URL as one wide string.
-    #[cfg(target_os = "windows")]
-    {
-        use std::ffi::OsStr;
-        use std::os::windows::ffi::OsStrExt;
-        use windows_sys::Win32::UI::Shell::ShellExecuteW;
-        use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
-
-        let wide_target: Vec<u16> = OsStr::new(&target)
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect();
-        let wide_op: Vec<u16> = OsStr::new("open")
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect();
-        let res = unsafe {
-            ShellExecuteW(
-                std::ptr::null_mut(),
-                wide_op.as_ptr(),
-                wide_target.as_ptr(),
-                std::ptr::null(),
-                std::ptr::null(),
-                SW_SHOWNORMAL,
-            )
-        };
-        if (res as usize) <= 32 {
-            return Err(format!("ShellExecuteW failed with code {res}"));
-        }
-        return Ok(());
-    }
-    #[cfg(target_os = "macos")]
-    {
-        return spawn_detached("open", &[target.as_str()]);
-    }
-    #[cfg(target_os = "linux")]
-    {
-        return spawn_detached("xdg-open", &[target.as_str()]);
-    }
-    #[allow(unreachable_code)]
-    Err("unsupported platform".into())
-}
-
-fn open_app(app: &str) -> Result<(), String> {
+fn open_app(app: &str, supervisor: &ProcessSupervisor) -> Result<(), String> {
     let key = app.to_lowercase();
 
     #[cfg(target_os = "windows")]
-    {
-        let command = match key.as_str() {
+    let (program, args): (&str, Vec<String>) = (
+        match key.as_str() {
             "spotify" => "spotify.exe",
             "chrome" => "chrome.exe",
             "firefox" => "firefox.exe",
@@ -74,27 +21,31 @@ fn open_app(app: &str) -> Result<(), String> {
             "terminal" => "wt.exe",
             "notepad" => "notepad.exe",
             _ => return Err(format!("unknown app alias: {app}")),
-        };
-        return spawn_detached(command, &[]);
-    }
+        },
+        Vec::new(),
+    );
 
     #[cfg(target_os = "macos")]
-    {
-        let bundle = match key.as_str() {
-            "spotify" => "Spotify",
-            "chrome" => "Google Chrome",
-            "firefox" => "Firefox",
-            "vscode" => "Visual Studio Code",
-            "terminal" => "Terminal",
-            "notepad" => "TextEdit",
-            _ => return Err(format!("unknown app alias: {app}")),
-        };
-        return spawn_detached("open", &["-a", bundle]);
-    }
+    let (program, args): (&str, Vec<String>) = (
+        "open",
+        vec![
+            "-a".into(),
+            match key.as_str() {
+                "spotify" => "Spotify",
+                "chrome" => "Google Chrome",
+                "firefox" => "Firefox",
+                "vscode" => "Visual Studio Code",
+                "terminal" => "Terminal",
+                "notepad" => "TextEdit",
+                _ => return Err(format!("unknown app alias: {app}")),
+            }
+            .into(),
+        ],
+    );
 
     #[cfg(target_os = "linux")]
-    {
-        let command = match key.as_str() {
+    let (program, args): (&str, Vec<String>) = (
+        match key.as_str() {
             "spotify" => "spotify",
             "chrome" => "google-chrome",
             "firefox" => "firefox",
@@ -102,31 +53,65 @@ fn open_app(app: &str) -> Result<(), String> {
             "terminal" => "x-terminal-emulator",
             "notepad" => "gedit",
             _ => return Err(format!("unknown app alias: {app}")),
-        };
-        return spawn_detached(command, &[]);
-    }
+        },
+        Vec::new(),
+    );
 
-    #[allow(unreachable_code)]
-    Err("unsupported platform".into())
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    return Err("unsupported platform".into());
+
+    #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+    {
+        supervisor
+            .spawn(ProcessSpec::new(program, OwnershipClass::UserApp).args(args))
+            .map(|_| ())
+    }
 }
 
-pub fn execute(name: &str, args: &Value, supervisor: &ProcessSupervisor) -> Result<ToolResult, String> {
+pub fn execute(
+    name: &str,
+    args: &Value,
+    supervisor: &ProcessSupervisor,
+    updater: &crate::updater::UpdaterService,
+    model_manager: &crate::model_manager::ModelManager,
+) -> Result<ToolResult, String> {
     match name {
         "app.open" => {
-            let app = args.get("app").and_then(Value::as_str).ok_or("missing app")?;
-            open_app(app)?;
-            Ok(ToolResult { ok: true, message: format!("Opened {app}.") })
+            let app = args
+                .get("app")
+                .and_then(Value::as_str)
+                .ok_or("missing app")?;
+            open_app(app, supervisor)?;
+            Ok(ToolResult {
+                ok: true,
+                message: format!("Opened {app}."),
+            })
         }
         "browser.open" => {
-            let url = args.get("url").and_then(Value::as_str).ok_or("missing url")?;
+            let url = args
+                .get("url")
+                .and_then(Value::as_str)
+                .ok_or("missing url")?;
             super::browser::open(url, false)?;
-            Ok(ToolResult { ok: true, message: "Opened in your browser.".into() })
+            Ok(ToolResult {
+                ok: true,
+                message: "Opened in your browser.".into(),
+            })
         }
         "browser.search" => {
-            let query = args.get("query").and_then(Value::as_str).ok_or("missing query")?;
-            let url = format!("https://www.google.com/search?q={}", urlencoding::encode(query));
+            let query = args
+                .get("query")
+                .and_then(Value::as_str)
+                .ok_or("missing query")?;
+            let url = format!(
+                "https://www.google.com/search?q={}",
+                urlencoding::encode(query)
+            );
             super::browser::open(&url, false)?;
-            Ok(ToolResult { ok: true, message: format!("Searching for {query}.") })
+            Ok(ToolResult {
+                ok: true,
+                message: format!("Searching for {query}."),
+            })
         }
         "browser.tabs" => {
             let tabs = super::browser::tabs()?;
@@ -145,7 +130,10 @@ pub fn execute(name: &str, args: &Value, supervisor: &ProcessSupervisor) -> Resu
         }
         "browser.find" => {
             let tab_id = args.get("tab_id").and_then(Value::as_u64).map(|n| n as u32);
-            let query = args.get("query").and_then(Value::as_str).ok_or("missing query")?;
+            let query = args
+                .get("query")
+                .and_then(Value::as_str)
+                .ok_or("missing query")?;
             let by = args.get("by").and_then(Value::as_str).unwrap_or("text");
             let elements = super::browser::find(tab_id, query, by)?;
             Ok(ToolResult {
@@ -155,7 +143,10 @@ pub fn execute(name: &str, args: &Value, supervisor: &ProcessSupervisor) -> Resu
         }
         "browser.click" => {
             let tab_id = args.get("tab_id").and_then(Value::as_u64).map(|n| n as u32);
-            let ref_id = args.get("ref").and_then(Value::as_str).ok_or("missing ref")?;
+            let ref_id = args
+                .get("ref")
+                .and_then(Value::as_str)
+                .ok_or("missing ref")?;
             let res = super::browser::click(tab_id, ref_id)?;
             Ok(ToolResult {
                 ok: res.success,
@@ -164,8 +155,14 @@ pub fn execute(name: &str, args: &Value, supervisor: &ProcessSupervisor) -> Resu
         }
         "browser.type" => {
             let tab_id = args.get("tab_id").and_then(Value::as_u64).map(|n| n as u32);
-            let ref_id = args.get("ref").and_then(Value::as_str).ok_or("missing ref")?;
-            let text = args.get("text").and_then(Value::as_str).ok_or("missing text")?;
+            let ref_id = args
+                .get("ref")
+                .and_then(Value::as_str)
+                .ok_or("missing ref")?;
+            let text = args
+                .get("text")
+                .and_then(Value::as_str)
+                .ok_or("missing text")?;
             let clear = args.get("clear").and_then(Value::as_bool).unwrap_or(false);
             let submit = args.get("submit").and_then(Value::as_bool).unwrap_or(false);
             let res = super::browser::type_text(tab_id, ref_id, text, clear, submit)?;
@@ -176,8 +173,14 @@ pub fn execute(name: &str, args: &Value, supervisor: &ProcessSupervisor) -> Resu
         }
         "browser.select" => {
             let tab_id = args.get("tab_id").and_then(Value::as_u64).map(|n| n as u32);
-            let ref_id = args.get("ref").and_then(Value::as_str).ok_or("missing ref")?;
-            let value = args.get("value").and_then(Value::as_str).ok_or("missing value")?;
+            let ref_id = args
+                .get("ref")
+                .and_then(Value::as_str)
+                .ok_or("missing ref")?;
+            let value = args
+                .get("value")
+                .and_then(Value::as_str)
+                .ok_or("missing value")?;
             let res = super::browser::select(tab_id, ref_id, value)?;
             Ok(ToolResult {
                 ok: res.success,
@@ -186,7 +189,10 @@ pub fn execute(name: &str, args: &Value, supervisor: &ProcessSupervisor) -> Resu
         }
         "browser.scroll" => {
             let tab_id = args.get("tab_id").and_then(Value::as_u64).map(|n| n as u32);
-            let direction = args.get("direction").and_then(Value::as_str).unwrap_or("down");
+            let direction = args
+                .get("direction")
+                .and_then(Value::as_str)
+                .unwrap_or("down");
             let amount = args.get("amount").and_then(Value::as_i64).unwrap_or(500) as i32;
             let res = super::browser::scroll(tab_id, direction, amount)?;
             Ok(ToolResult {
@@ -206,9 +212,18 @@ pub fn execute(name: &str, args: &Value, supervisor: &ProcessSupervisor) -> Resu
         }
         "browser.wait" => {
             let tab_id = args.get("tab_id").and_then(Value::as_u64).map(|n| n as u32);
-            let selector = args.get("selector").and_then(Value::as_str).ok_or("missing selector")?;
-            let condition = args.get("condition").and_then(Value::as_str).unwrap_or("visible");
-            let timeout_ms = args.get("timeout_ms").and_then(Value::as_u64).unwrap_or(5000);
+            let selector = args
+                .get("selector")
+                .and_then(Value::as_str)
+                .ok_or("missing selector")?;
+            let condition = args
+                .get("condition")
+                .and_then(Value::as_str)
+                .unwrap_or("visible");
+            let timeout_ms = args
+                .get("timeout_ms")
+                .and_then(Value::as_u64)
+                .unwrap_or(5000);
             let res = super::browser::wait(tab_id, selector, condition, timeout_ms)?;
             Ok(ToolResult {
                 ok: res.success,
@@ -216,7 +231,10 @@ pub fn execute(name: &str, args: &Value, supervisor: &ProcessSupervisor) -> Resu
             })
         }
         "browser.download" => {
-            let url = args.get("url").and_then(Value::as_str).ok_or("missing url")?;
+            let url = args
+                .get("url")
+                .and_then(Value::as_str)
+                .ok_or("missing url")?;
             let filename = args.get("filename").and_then(Value::as_str);
             let res = super::browser::download(url, filename)?;
             Ok(ToolResult {
@@ -225,8 +243,10 @@ pub fn execute(name: &str, args: &Value, supervisor: &ProcessSupervisor) -> Resu
             })
         }
         "browser.verify" => {
-            let contract: crate::policy::VerificationContract = serde_json::from_value(args.clone())
-                .map_err(|e| format!("invalid-args: browser.verify requires verification contract: {e}"))?;
+            let contract: crate::policy::VerificationContract =
+                serde_json::from_value(args.clone()).map_err(|e| {
+                    format!("invalid-args: browser.verify requires verification contract: {e}")
+                })?;
             let res = super::browser::verify_action(&contract)?;
             Ok(ToolResult {
                 ok: res.success,
@@ -234,11 +254,17 @@ pub fn execute(name: &str, args: &Value, supervisor: &ProcessSupervisor) -> Resu
             })
         }
         "harness.start" => {
-            let harness = args.get("harness").and_then(Value::as_str).ok_or("missing harness")?;
+            let harness = args
+                .get("harness")
+                .and_then(Value::as_str)
+                .ok_or("missing harness")?;
             let prompt = args.get("prompt").and_then(Value::as_str).unwrap_or("");
             let cwd = args.get("cwd").and_then(Value::as_str);
             super::harness::launch(harness, prompt, cwd, supervisor)?;
-            Ok(ToolResult { ok: true, message: format!("Started {harness}.") })
+            Ok(ToolResult {
+                ok: true,
+                message: format!("Started {harness}."),
+            })
         }
         "desktop.inspect" => {
             let win = args.get("window").and_then(Value::as_str);
@@ -307,7 +333,10 @@ pub fn execute(name: &str, args: &Value, supervisor: &ProcessSupervisor) -> Resu
             let sel = args
                 .get("selector")
                 .and_then(|v| serde_json::from_value(v.clone()).ok());
-            let text = args.get("text").and_then(Value::as_str).ok_or("missing text")?;
+            let text = args
+                .get("text")
+                .and_then(Value::as_str)
+                .ok_or("missing text")?;
             let clear_first = args
                 .get("clear_first")
                 .and_then(Value::as_bool)
@@ -319,7 +348,10 @@ pub fn execute(name: &str, args: &Value, supervisor: &ProcessSupervisor) -> Resu
             })
         }
         "desktop.press_key" => {
-            let key = args.get("key").and_then(Value::as_str).ok_or("missing key")?;
+            let key = args
+                .get("key")
+                .and_then(Value::as_str)
+                .ok_or("missing key")?;
             let empty_mods = Vec::new();
             let modifiers: Vec<&str> = args
                 .get("modifiers")
@@ -369,21 +401,34 @@ pub fn execute(name: &str, args: &Value, supervisor: &ProcessSupervisor) -> Resu
             })
         }
         "system.update_check" => {
-            let channel_str = args.get("channel").and_then(Value::as_str).unwrap_or("stable");
-            let channel = crate::updater::UpdateChannel::parse_channel(channel_str)?;
+            let channel = crate::updater::UpdateChannel::parse_channel(
+                args.get("channel")
+                    .and_then(Value::as_str)
+                    .unwrap_or("stable"),
+            )?;
+            updater.set_channel(channel);
+            let status = updater.check_now(model_manager)?;
             Ok(ToolResult {
-                ok: true,
-                message: format!("update-check scheduled on channel {}", channel.as_str()),
+                ok: !matches!(
+                    status,
+                    crate::updater::UpdateStatus::Blocked { .. }
+                        | crate::updater::UpdateStatus::Failed { .. }
+                ),
+                message: serde_json::to_string(&status).map_err(|e| e.to_string())?,
             })
         }
         "system.update_apply" => {
-            let target_version = args.get("target_version").and_then(Value::as_str).ok_or("missing target_version")?;
-            if crate::updater::is_update_in_progress() {
-                return Err("update already in progress".into());
-            }
+            let target_version = args
+                .get("target_version")
+                .and_then(Value::as_str)
+                .ok_or("missing target_version")?;
+            let staged = updater.stage_available(target_version, model_manager)?;
             Ok(ToolResult {
-                ok: true,
-                message: format!("update to {target_version} staged; install proceeds only after manifest signature + anti-downgrade verification"),
+                ok: false,
+                message: format!(
+                    "verified update staged at {}; installer activation is unavailable in this build",
+                    staged.display()
+                ),
             })
         }
         _ => Err(format!("unknown tool: {name}")),

@@ -41,3 +41,19 @@ Linux/macOS:
 
 Tests prove owned grandchildren do not survive normal quit or forced parent
 termination, while USER_APP/ATTACHED processes are preserved.
+
+## Acceptance notes
+
+- Windows owned processes are created suspended, assigned to a
+  `KILL_ON_JOB_CLOSE` Job Object, then resumed. Piped and non-piped spawn paths
+  preserve the zero-execution-before-assignment invariant.
+- Linux owned processes use dedicated process groups plus `PR_SET_PDEATHSIG`.
+- macOS owned processes use dedicated process groups plus a guardian process
+  watching a parent-liveness pipe; EOF terminates the owned group.
+- Diagnostics record OS-derived process start identity where the platform
+  exposes it and the actual process-group/job identity instead of synthetic IDs.
+- The old unsupervised `track` path and direct user-app launcher were removed;
+  every app launch now goes through the supervisor ownership classes.
+- Acceptance remains pending until platform CI proves grandchildren terminate
+  after normal quit and forced parent death while `USER_APP`/`ATTACHED`
+  processes survive.

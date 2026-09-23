@@ -32,6 +32,10 @@ impl PlatformHandle {
         terminate_process_group(self.pgid);
         Ok(())
     }
+
+    pub fn identity_label(&self) -> String {
+        format!("posix-pgid-{}", self.pgid)
+    }
 }
 
 impl Drop for PlatformHandle {
@@ -42,6 +46,21 @@ impl Drop for PlatformHandle {
                 libc::close(fd);
             }
         }
+    }
+}
+
+pub fn process_start_identity(pid: u32) -> Option<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        let after_comm = stat.rsplit_once(") ")?.1;
+        return after_comm.split_whitespace().nth(19)?.parse().ok();
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = pid;
+        None
     }
 }
 
@@ -129,17 +148,42 @@ pub fn configure_posix_command(command: &mut Command) -> Result<Option<PlatformH
 
         unsafe {
             command.pre_exec(move || {
-                // 1. Dedicated session / process group
+                // Dedicated session/process group. The target PID becomes the PGID.
                 if libc::setsid() == -1 {
                     libc::setpgid(0, 0);
                 }
-
-                // Close write end in child so that only parent holds write end
                 libc::close(write_fd);
 
-                // Note: The child process inherits read_fd. If ReflexDesk parent terminates or crashes,
-                // the kernel closes all open file descriptors belonging to ReflexDesk, closing write_fd.
-                // A guardian reader thread or subshell receives EOF and terminates.
+                // macOS has no PDEATHSIG. Fork a minimal guardian before exec.
+                // It owns only the liveness read end; EOF means the ReflexDesk
+                // parent closed/died, so it kills the entire owned process group.
+                let target_pgid = libc::getpid();
+                let guardian = libc::fork();
+                if guardian == -1 {
+                    libc::close(read_fd);
+                    return Err(std::io::Error::last_os_error());
+                }
+                if guardian == 0 {
+                    let mut byte = [0u8; 1];
+                    loop {
+                        let n = libc::read(read_fd, byte.as_mut_ptr().cast(), 1);
+                        if n == 0 {
+                            libc::kill(-target_pgid, libc::SIGKILL);
+                            libc::_exit(0);
+                        }
+                        if n < 0 {
+                            let error = *libc::__error();
+                            if error == libc::EINTR {
+                                continue;
+                            }
+                            libc::kill(-target_pgid, libc::SIGKILL);
+                            libc::_exit(1);
+                        }
+                    }
+                }
+
+                // Only the guardian watches the pipe. The target proceeds to exec.
+                libc::close(read_fd);
                 Ok(())
             });
         }

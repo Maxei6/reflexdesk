@@ -91,16 +91,17 @@ commit SHA.
    - Structured registry tracking exit criteria blockers:
      - `BLK-001`: Multi-OS 72-hour physical fleet hardware soak (`BLOCKED_ON_HARDWARE`).
      - `BLK-002`: Production code signing and notarization credentials (`BLOCKED_ON_CREDENTIALS`).
+     - `BLK-003`: Cross-platform semantic desktop adapters (`OPEN`).
+     - `BLK-004`: Signed updater activation and rollback (`OPEN`).
    - Tracks known limitations (LIM-001 for HTTP loopback STT seam, LIM-002 for local planner fallback).
-   - Exit criteria status evaluates to `exit_criteria_met: false` until physical hardware soak and signing credentials resolve.
+   - Exit criteria remain false until all code, hardware, and credential blockers resolve.
 
 4. **Entry Criteria Checklist Tooling (`scripts/soak-entry-check.mjs`)**:
-   - Automated evaluator validating all 5 entry criteria:
-     - Core P1 plans presence and status (`PASS`).
-     - Security findings, threat model, and lockfile verification (`PASS`).
-     - Signed/notarized release workflow availability (`PASS` / `BLOCKED_ON_CREDENTIALS`).
-     - Updater staging configuration (`PASS`).
-     - Representative E2E test suite status (`PASS`).
+   - Evaluates authoritative plan status, not plan-file presence.
+   - Requires both dependency lockfiles for a passing security result.
+   - Treats unmeasured OS metrics as `WARN`, never as a fabricated E2E pass.
+   - Reports the current desktop-plan gap as `FAIL`, so the release candidate is
+     not ready to begin production soak.
    - Supports `--json` and `--strict` execution modes.
 
 5. **Soak Collection & Redaction-Routed Observability (`scripts/soak-collect.mjs`)**:
@@ -133,3 +134,7 @@ commit SHA.
 
 - **Multi-day physical hardware soak**: Running continuous 24h and 72h soak cycles across the physical fleet matrix (Apple Silicon M-series, low-end CPU-only x86, NVIDIA discrete GPU, physical Bluetooth headsets, and ACPI sleep transitions) requires physical machines. In local workstation and virtual CI environments, this remains `BLOCKED ON HARDWARE` (tracked in `BLK-001`). All metrics remain `null`.
 - **Signed and notarized release artifacts**: Verification of signed binaries and updater staging depends on production certificates and keys from Plan 17 (tracked in `BLK-002` as `BLOCKED_ON_CREDENTIALS`).
+- **Semantic desktop adapters**: Plan 02 remains partial until Windows UIA,
+  macOS AX, and Linux AT-SPI adapters pass representative live tasks (`BLK-003`).
+- **Updater activation and rollback**: cryptographic staging is implemented, but
+  a signed installer activation/recovery path is still required (`BLK-004`).

@@ -48,26 +48,34 @@ missing.
 Fresh Windows/macOS machines install without avoidable trust warnings, updater
 rejects tampered artifacts, and a staged rollback is tested before stable v1.
 
-## Implementation notes (one-pass, 2026-09-22)
+## Implementation notes
 
-Status: PARTIAL — scaffolding implemented, credential-blocked items open.
-Tests: `tests/updater.test.mjs` 10/10 pass (preflight fail-closed, anti-downgrade,
-signature presence, staged rollouts, model-migration lockout).
+Status: PARTIAL — cryptographic verification and staging implemented; release
+credentials, installer activation, rollback, and clean-machine drills remain open.
 
-Implemented without credentials:
-- `src-tauri/src/updater.rs`: channels (nightly/beta/stable), `verify_manifest`
-  (strict anti-downgrade, fail-closed on missing pubkey, unsigned/tampered
-  rejection, sha256 presence, staged cohort eligibility), mutual exclusion with
-  model transactions both directions (`is_update_in_progress` /
-  `ModelManager::{begin_transaction, is_transaction_in_progress}` + RAII guard).
-- Policy-gated tools `system.update_check` (Safe) / `system.update_apply`
-  (Destructive + confirm + external); Tauri commands + ACL least-privilege.
-- `tauri.conf.json` updater scaffolding with empty pubkey/endpoints (disabled
-  until a real key is embedded); `release.yml` preflight job fails closed
-  without credentials; `scripts/release-preflight.mjs` + artifact metadata.
-- Manifest fixtures: valid, tampered, unsigned, downgrade, staged rollout.
+Implemented without release credentials:
+- `src-tauri/src/updater.rs` verifies an Ed25519 signature over canonical
+  version/platform/URL/SHA-256 metadata before anti-downgrade and rollout checks.
+- Update feeds and artifacts require HTTPS. Downloads are bounded, streamed to a
+  temporary file, SHA-256 checked against the signed manifest, fsynced, and
+  atomically renamed to verified staging.
+- Stable client identity drives deterministic rollout cohorts.
+- Update staging and model acquisition/migration are mutually exclusive through
+  RAII transaction guards.
+- `system.update_check` performs a real channel feed check.
+  `system.update_apply` currently stages a verified artifact but reports
+  `ok: false` with `installer activation unavailable`; it never claims an update
+  was installed.
+- The previous rollback command was removed because it only validated a backup
+  path and falsely reported success without restoring the application.
+- CI uses the committed `Cargo.lock`; preview release preflight remains fail-closed.
+- Rust cryptographic tests cover signed downgrade rejection and manifest
+  tampering. The Node updater/preflight suite remains green.
 
-Still BLOCKED ON EXTERNAL CREDENTIALS (not done, no placeholders committed):
-Windows Authenticode cert, Apple Developer ID + notarization/stapling,
-Tauri updater private signing key, SmartScreen/Gatekeeper clean-machine
-verification, staged-rollback drill before stable v1.
+Still blocked:
+- Windows Authenticode certificate/service.
+- Apple Developer ID, notarization, and stapling credentials.
+- Production updater signing key/public key and stable feed.
+- A real signed platform installer activation path with rollback/recovery.
+- SmartScreen/Gatekeeper clean-machine verification and a staged rollback drill
+  before stable v1.

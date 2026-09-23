@@ -38,7 +38,7 @@ fn now_secs() -> u64 {
 fn new_nonce() -> String {
     use rand::RngCore;
     let mut bytes = [0u8; 16];
-    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    rand::rng().fill_bytes(&mut bytes);
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut out = String::with_capacity(32);
     for b in bytes {

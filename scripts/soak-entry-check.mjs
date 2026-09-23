@@ -37,26 +37,39 @@ export function evaluateEntryCriteria(rootDir = process.cwd()) {
     "14_OBSERVABILITY_DIAGNOSTICS.md"
   ];
 
-  let missingPlans = [];
+  const missingPlans = [];
+  const incompletePlans = [];
   let plansChecked = 0;
   for (const file of p1PlanFiles) {
     const fullPath = path.join(rootDir, "docs/plans", file);
-    if (fs.existsSync(fullPath)) {
-      plansChecked++;
-    } else {
+    if (!fs.existsSync(fullPath)) {
       missingPlans.push(file);
+      continue;
+    }
+    plansChecked++;
+    const source = fs.readFileSync(fullPath, "utf8");
+    const status = source.match(/^\*\*Status:\*\*\s*(.+)$/m)?.[1]?.trim() || "MISSING";
+    if (!/^(CODE COMPLETE|COMPLETE|IMPLEMENTED)\b/i.test(status)) {
+      incompletePlans.push({ file, status });
     }
   }
 
+  const corePlansReady = missingPlans.length === 0 && incompletePlans.length === 0;
   results.criteria.core_p1_plans = {
     name: "Core P1 Plans",
     total_required: p1PlanFiles.length,
     present: plansChecked,
     missing: missingPlans,
-    status: missingPlans.length === 0 ? "PASS" : "FAIL"
+    incomplete: incompletePlans,
+    status: corePlansReady ? "PASS" : "FAIL"
   };
-  if (missingPlans.length > 0) {
-    results.blockers.push(`Missing core P1 plan documents: ${missingPlans.join(", ")}`);
+  if (!corePlansReady) {
+    results.blockers.push(
+      `Core P1 plans are not code-complete: ${[
+        ...missingPlans,
+        ...incompletePlans.map(plan => `${plan.file} (${plan.status})`)
+      ].join(", ")}`
+    );
   }
 
   // 2. Security findings check
@@ -78,7 +91,8 @@ export function evaluateEntryCriteria(rootDir = process.cwd()) {
   if (fs.existsSync(packageLockPath) && fs.existsSync(cargoLockPath)) {
     securityDetails.push("Dependency lockfiles present");
   } else {
-    securityDetails.push("One or more lockfiles missing");
+    securityOk = false;
+    securityDetails.push("One or more dependency lockfiles missing");
   }
 
   if (fs.existsSync(blockersPath)) {
@@ -111,31 +125,42 @@ export function evaluateEntryCriteria(rootDir = process.cwd()) {
   const workflowExists = fs.existsSync(releaseWorkflowPath);
   const preflightExists = fs.existsSync(releasePreflightPath);
 
-  let workflowStatus = "PASS";
-  let workflowDetails = [];
-
+  const workflowDetails = [];
   if (workflowExists) {
     workflowDetails.push("release.yml workflow defined");
   } else {
-    workflowStatus = "FAIL";
     workflowDetails.push("release.yml workflow missing");
   }
-
   if (preflightExists) {
     workflowDetails.push("release-preflight.mjs script defined");
   } else {
-    workflowDetails.push("release-preflight.mjs pending/scaffolded in Plan 17");
+    workflowDetails.push("release-preflight.mjs missing");
   }
 
-  // Plan 17 is known to be BLOCKED ON CREDENTIALS
+  let signingCredentialsBlocked = false;
+  try {
+    const registry = JSON.parse(fs.readFileSync(blockersPath, "utf8"));
+    signingCredentialsBlocked = (registry.blockers || []).some(
+      blocker => blocker.id === "BLK-002" && blocker.status === "BLOCKED_ON_CREDENTIALS"
+    );
+  } catch {
+    workflowDetails.push("release blocker registry unavailable");
+  }
+
+  const releaseWorkflowStatus =
+    !workflowExists || !preflightExists
+      ? "FAIL"
+      : signingCredentialsBlocked
+        ? "BLOCKED_ON_CREDENTIALS"
+        : "PASS";
+  if (signingCredentialsBlocked) {
+    workflowDetails.push("production signing/notarization credentials are not provisioned");
+  }
   results.criteria.release_workflow = {
     name: "Signed/Notarized Release Workflow",
-    status: workflowExists ? "PASS" : "BLOCKED_ON_CREDENTIALS",
+    status: releaseWorkflowStatus,
     details: workflowDetails
   };
-  if (!workflowExists) {
-    results.warnings.push("Release workflow file .github/workflows/release.yml not found");
-  }
 
   // 4. Updater staging check
   const tauriConfPath = path.join(rootDir, "src-tauri/tauri.conf.json");

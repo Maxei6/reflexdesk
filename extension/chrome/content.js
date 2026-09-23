@@ -57,6 +57,24 @@
     "menuitem", "tab", "switch", "option", "slider"
   ]);
 
+  function semanticRole(el) {
+    const explicit = el.getAttribute("role");
+    if (explicit) return explicit.toLowerCase();
+    const tag = el.tagName.toLowerCase();
+    if (tag === "button") return "button";
+    if (tag === "a" && el.hasAttribute("href")) return "link";
+    if (tag === "textarea") return "textbox";
+    if (tag === "select") return "combobox";
+    if (tag === "input") {
+      const type = (el.getAttribute("type") || "text").toLowerCase();
+      if (type === "checkbox" || type === "radio") return type;
+      if (type === "search") return "searchbox";
+      if (type === "button" || type === "submit" || type === "reset") return "button";
+      return "textbox";
+    }
+    return null;
+  }
+
   let refCounter = 1;
   const refMap = new Map(); // refId -> Element
 
@@ -105,7 +123,7 @@
         window.getComputedStyle(node).visibility !== "hidden" &&
         window.getComputedStyle(node).display !== "none");
 
-      const role = node.getAttribute("role") || null;
+      const role = semanticRole(node);
       const ariaLabel = node.getAttribute("aria-label") || null;
       const isSensitive = isElementSensitive(node);
 
@@ -180,29 +198,33 @@
       }
 
       case "browser.find": {
-        const query = args.query;
+        const query = String(args.query || "");
         const by = args.by || "text";
-        let matches = [];
+        const matches = [];
 
         if (by === "selector") {
           try {
-            const found = document.querySelectorAll(query);
-            for (const el of found) {
+            for (const el of document.querySelectorAll(query)) {
               const ref = el.getAttribute("data-reflexdesk-ref");
-              if (ref && refMap.has(ref)) {
-                matches.push(ref);
-              }
+              if (ref && refMap.has(ref)) matches.push(ref);
             }
           } catch (e) {
             sendResponse({ success: false, error: `Invalid selector: ${e.message}` });
             return;
           }
+        } else if (by === "ref") {
+          if (refMap.has(query)) matches.push(query);
         } else {
+          const normalized = query.toLowerCase();
           for (const [ref, el] of refMap.entries()) {
+            if (by === "role") {
+              const role = semanticRole(el);
+              if (role === normalized) matches.push(ref);
+              continue;
+            }
             const textContent = (el.innerText || el.textContent || "").toLowerCase();
             const aria = (el.getAttribute("aria-label") || "").toLowerCase();
-            const q = query.toLowerCase();
-            if (textContent.includes(q) || aria.includes(q)) {
+            if (textContent.includes(normalized) || aria.includes(normalized)) {
               matches.push(ref);
             }
           }
@@ -327,12 +349,27 @@
 
       case "browser.wait": {
         const selector = args.selector;
-        const timeoutMs = args.timeoutMs || 5000;
+        const condition = args.condition || "visible";
+        const timeoutMs = Math.min(args.timeoutMs || 5000, 30000);
         const startTime = Date.now();
+
+        function isVisible(el) {
+          if (!el) return false;
+          const style = getComputedStyle(el);
+          const rect = el.getBoundingClientRect();
+          return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
+        }
 
         function check() {
           const el = document.querySelector(selector);
-          if (el) {
+          const matched = condition === "hidden"
+            ? !isVisible(el)
+            : condition === "attached" || condition === "present"
+              ? Boolean(el)
+              : condition === "enabled"
+                ? Boolean(el) && !el.disabled
+                : isVisible(el);
+          if (matched) {
             sendResponse({ success: true, matched: true, elapsedMs: Date.now() - startTime });
           } else if (Date.now() - startTime > timeoutMs) {
             sendResponse({ success: false, error: "action-timeout", matched: false, elapsedMs: timeoutMs });
@@ -341,7 +378,7 @@
           }
         }
         check();
-        return true; // async sendResponse
+        return true;
       }
 
       case "browser.verify": {

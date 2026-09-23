@@ -4,10 +4,10 @@
   "exit_criteria_met": false,
   "summary": {
     "ready_for_release": false,
-    "open_blockers": 2,
-    "open_major_defects": 0,
+    "open_blockers": 4,
+    "open_major_defects": 2,
     "known_limitations": 2,
-    "status": "BLOCKED ON HARDWARE AND CREDENTIALS"
+    "status": "BLOCKED ON CODE, HARDWARE, AND CREDENTIALS"
   },
   "blockers": [
     {
@@ -33,6 +33,30 @@
       "blocking_reason": "External signing identities withheld from repository code by design to prevent credential exposure.",
       "resolution_criteria": "Provision valid certificates and keys in GitHub repository secrets; verify that release-preflight.mjs exits 0 in CI publish pipeline.",
       "verification_step": "node scripts/release-preflight.mjs"
+    },
+    {
+      "id": "BLK-003",
+      "title": "Cross-platform semantic desktop adapters incomplete",
+      "plan_id": "02_DESKTOP_CONTROL",
+      "severity": "RELEASE_BLOCKER",
+      "status": "OPEN",
+      "owner": "Desktop Control",
+      "description": "Windows currently uses an HWND/control-message fallback without UIA patterns; macOS AX and Linux AT-SPI actions fail closed because their native adapters are not linked.",
+      "blocking_reason": "The Plan 02 definition of done requires representative semantic tasks on every supported OS.",
+      "resolution_criteria": "Implement Windows UIA, macOS AX, and Linux AT-SPI adapters and pass representative inspect/act/verify tasks on each supported OS.",
+      "verification_step": "Run the Plan 02 representative desktop task matrix on Windows, macOS, and Linux and attach reproducible logs."
+    },
+    {
+      "id": "BLK-004",
+      "title": "Signed updater activation and rollback unavailable",
+      "plan_id": "17_SIGNING_UPDATER_RELEASES",
+      "severity": "RELEASE_BLOCKER",
+      "status": "OPEN",
+      "owner": "Release Engineering",
+      "description": "The updater cryptographically verifies and stages artifacts but intentionally does not activate installers or restore a previous application version.",
+      "blocking_reason": "A staged file is not an installed update, and the rollback command was removed because it previously reported success without restoring anything.",
+      "resolution_criteria": "Integrate the signed platform installer activation path, persist rollback metadata only after a successful backup, and prove recovery from interrupted and failed updates.",
+      "verification_step": "Execute a signed install, forced-failure rollback, and clean-machine recovery drill on Windows and macOS."
     }
   ],
   "known_limitations": [

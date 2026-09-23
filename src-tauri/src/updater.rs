@@ -1,31 +1,49 @@
 //! Release update and verification manager for ReflexDesk.
 //!
-//! Provides channel selection (nightly/beta/stable), embedded public key
-//! verification scaffolding, anti-downgrade enforcement, staged rollout cohort calculation,
-//! rollback recovery primitives, and transaction coordination with `ModelManager`
-//! to ensure application updates never run during model migration/downloads.
+//! Provides channel selection (nightly/beta/stable), embedded public-key
+//! verification, anti-downgrade enforcement, staged rollout cohort calculation,
+//! verified artifact staging, and transaction coordination with `ModelManager`.
+//! Installer activation and rollback are intentionally unavailable until the
+//! signed platform updater is wired end to end.
 
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
+    fs::{self, File},
+    io::{Read, Write},
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
         Mutex,
     },
+    time::Duration,
 };
-use tauri::{AppHandle, Manager};
 
 static UPDATE_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
-/// Returns true if an update download, staging, or application is actively in progress.
+/// Returns true while an update check, download, or staging operation is active.
 pub fn is_update_in_progress() -> bool {
     UPDATE_IN_PROGRESS.load(Ordering::SeqCst)
 }
 
-/// Sets whether an update operation is in progress.
-pub fn set_update_in_progress(in_progress: bool) {
-    UPDATE_IN_PROGRESS.store(in_progress, Ordering::SeqCst);
+struct UpdateTransaction;
+
+impl UpdateTransaction {
+    fn begin() -> Result<Self, String> {
+        UPDATE_IN_PROGRESS
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .map_err(|_| "update already in progress".to_string())?;
+        Ok(Self)
+    }
+}
+
+impl Drop for UpdateTransaction {
+    fn drop(&mut self) {
+        UPDATE_IN_PROGRESS.store(false, Ordering::SeqCst);
+    }
 }
 
 /// Release channels for ReflexDesk.
@@ -82,12 +100,10 @@ pub enum UpdateStatus {
         target_version: String,
         percent: u8,
     },
-    ReadyToInstall {
+    Staged {
         target_version: String,
         staged_path: String,
-        backup_path: Option<String>,
     },
-    Applying,
     UpToDate {
         current_version: String,
     },
@@ -100,13 +116,6 @@ pub enum UpdateStatus {
     },
 }
 
-/// Stored rollback metadata for reverting an update.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RollbackMetadata {
-    pub previous_version: String,
-    pub backup_path: String,
-    pub updated_at_secs: u64,
-}
 
 /// Platform artifact metadata in the release manifest.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -206,6 +215,42 @@ pub fn is_newer_version(current: &str, target: &str) -> Result<bool, String> {
     let tgt = parse_semver(target)?;
     Ok(tgt > cur)
 }
+fn signed_artifact_payload(
+    version: &str,
+    platform: &str,
+    artifact_url: &str,
+    sha256: &str,
+) -> Vec<u8> {
+    format!(
+        "{version}\n{platform}\n{artifact_url}\n{}",
+        sha256.to_ascii_lowercase()
+    )
+    .into_bytes()
+}
+
+fn verify_artifact_signature(
+    public_key: &str,
+    signature: &str,
+    payload: &[u8],
+) -> Result<(), String> {
+    let key_bytes = BASE64
+        .decode(public_key.trim())
+        .map_err(|_| "embedded updater public key is not valid base64".to_string())?;
+    let key_array: [u8; 32] = key_bytes.try_into().map_err(|_| {
+        "embedded updater public key must contain exactly 32 Ed25519 bytes".to_string()
+    })?;
+    let verifying_key = VerifyingKey::from_bytes(&key_array)
+        .map_err(|_| "embedded updater public key is invalid".to_string())?;
+    let signature_bytes = BASE64
+        .decode(signature.trim())
+        .map_err(|_| "update artifact signature is not valid base64".to_string())?;
+    let signature = Signature::from_slice(&signature_bytes).map_err(|_| {
+        "update artifact signature must contain exactly 64 Ed25519 bytes".to_string()
+    })?;
+    verifying_key
+        .verify(payload, &signature)
+        .map_err(|_| "update artifact signature verification failed".to_string())
+}
 
 /// Verifies manifest integrity, anti-downgrade check, signature presence, and cohort eligibility.
 pub fn verify_manifest(
@@ -217,15 +262,6 @@ pub fn verify_manifest(
 ) -> Result<VerifiedUpdate, String> {
     let manifest: ReleaseManifest = serde_json::from_str(manifest_json)
         .map_err(|e| format!("failed to parse update manifest: {e}"))?;
-
-    // 1. Anti-downgrade check: target must be strictly newer
-    let is_newer = is_newer_version(current_version, &manifest.version)?;
-    if !is_newer {
-        return Err(format!(
-            "downgrade or identical version rejected: current={current_version}, target={}",
-            manifest.version
-        ));
-    }
 
     // 2. Public key check: if public key is absent (unsigned build), fail closed
     let pubkey = match public_key {
@@ -241,28 +277,31 @@ pub fn verify_manifest(
         .get(target_platform)
         .ok_or_else(|| format!("no update artifact found for platform {target_platform}"))?;
 
-    // 4. Signature verification check
-    let signature = artifact
-        .signature
-        .as_deref()
-        .ok_or_else(|| "update artifact is unsigned; rejected".to_string())?;
-
-    if signature.trim().is_empty() || signature.contains("INVALID") {
-        return Err("invalid or tampered update signature".into());
-    }
-
-    // Public key format sanity check (min length, base64 / pem)
-    if pubkey.len() < 16 {
-        return Err("embedded updater public key is invalid or truncated".into());
-    }
-
-    // 5. SHA256 presence check
+    // 4. Require a well-formed digest before verifying the signed metadata.
     let sha256 = artifact
         .sha256
         .as_deref()
         .ok_or_else(|| "missing sha256 checksum for update artifact".to_string())?;
-    if sha256.len() != 64 || sha256.chars().all(|c| c == '0') {
-        return Err("invalid or untrusted sha256 in update artifact".into());
+    if sha256.len() != 64 || !sha256.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err("invalid sha256 in update artifact".into());
+    }
+
+    // 5. Cryptographically authenticate exactly the metadata used for download.
+    let signature = artifact
+        .signature
+        .as_deref()
+        .ok_or_else(|| "update artifact is unsigned; rejected".to_string())?;
+    let payload =
+        signed_artifact_payload(&manifest.version, target_platform, &artifact.url, sha256);
+    verify_artifact_signature(pubkey, signature, &payload)?;
+
+    // Anti-downgrade is evaluated only after the manifest metadata is
+    // authenticated, so an unsigned old manifest cannot suppress updates.
+    if !is_newer_version(current_version, &manifest.version)? {
+        return Err(format!(
+            "downgrade or identical version rejected: current={current_version}, target={}",
+            manifest.version
+        ));
     }
 
     // 6. Staged rollout check
@@ -279,11 +318,10 @@ pub fn verify_manifest(
     })
 }
 
-/// Updater service maintaining state, rollback history, and transaction coordination.
+/// Updater service maintaining verified staging state and transaction coordination.
 pub struct UpdaterService {
     status: Mutex<UpdateStatus>,
     channel: Mutex<UpdateChannel>,
-    rollback_info: Mutex<Option<RollbackMetadata>>,
     app_data_dir: PathBuf,
 }
 
@@ -292,7 +330,6 @@ impl UpdaterService {
         Self {
             status: Mutex::new(UpdateStatus::Idle),
             channel: Mutex::new(UpdateChannel::Stable),
-            rollback_info: Mutex::new(None),
             app_data_dir,
         }
     }
@@ -323,19 +360,13 @@ impl UpdaterService {
         }
     }
 
-    pub fn get_rollback_info(&self) -> Option<RollbackMetadata> {
-        self.rollback_info.lock().ok().and_then(|g| g.clone())
-    }
-
-    pub fn set_rollback_info(&self, info: Option<RollbackMetadata>) {
-        if let Ok(mut guard) = self.rollback_info.lock() {
-            *guard = info;
-        }
-    }
 
     /// Checks if update is allowed given current model manager transactions.
     /// Transaction coordination: updates MUST NOT start during active model migration.
-    pub fn check_can_update(&self, model_manager: &crate::model_manager::ModelManager) -> Result<(), String> {
+    pub fn check_can_update(
+        &self,
+        model_manager: &crate::model_manager::ModelManager,
+    ) -> Result<(), String> {
         if model_manager.is_transaction_in_progress() {
             return Err("update blocked: model acquisition or migration transaction is actively in progress".into());
         }
@@ -351,6 +382,225 @@ impl UpdaterService {
     pub fn backup_dir(&self) -> PathBuf {
         self.app_data_dir.join("rollback_backup")
     }
+
+    fn client_id(&self) -> Result<String, String> {
+        let path = self.app_data_dir.join("updater-client-id");
+        if let Ok(existing) = fs::read_to_string(&path) {
+            let trimmed = existing.trim();
+            if trimmed.len() == 32 && trimmed.chars().all(|c| c.is_ascii_hexdigit()) {
+                return Ok(trimmed.to_ascii_lowercase());
+            }
+        }
+        fs::create_dir_all(&self.app_data_dir)
+            .map_err(|e| format!("failed to create updater state directory: {e}"))?;
+        use rand::RngCore;
+        let mut bytes = [0u8; 16];
+        rand::rng().fill_bytes(&mut bytes);
+        let id = bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        fs::write(&path, &id).map_err(|e| format!("failed to persist updater client id: {e}"))?;
+        Ok(id)
+    }
+
+    fn configured_feed(&self) -> Result<String, String> {
+        let key = format!(
+            "REFLEXDESK_UPDATER_FEED_{}",
+            self.get_channel().as_str().to_ascii_uppercase()
+        );
+        let feed = std::env::var(&key).map_err(|_| {
+            format!(
+                "update feed is not configured for {}",
+                self.get_channel().as_str()
+            )
+        })?;
+        let parsed = url::Url::parse(&feed).map_err(|_| "configured update feed URL is invalid")?;
+        if parsed.scheme() != "https" || parsed.host_str().is_none() {
+            return Err("configured update feed must use HTTPS with an explicit host".into());
+        }
+        Ok(feed)
+    }
+
+    pub fn fetch_verified_update(&self, client_id: &str) -> Result<VerifiedUpdate, String> {
+        let public_key = std::env::var("TAURI_UPDATER_PUBLIC_KEY")
+            .map_err(|_| "updater public key is not configured; updates are disabled")?;
+        let feed = self.configured_feed()?;
+        let response = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(15))
+            .build()
+            .map_err(|e| format!("failed to create update client: {e}"))?
+            .get(feed)
+            .send()
+            .map_err(|e| format!("update feed request failed: {e}"))?
+            .error_for_status()
+            .map_err(|e| format!("update feed returned an error: {e}"))?;
+        if response.content_length().unwrap_or(0) > 1024 * 1024 {
+            return Err("update manifest exceeds 1 MiB limit".into());
+        }
+        let manifest = response
+            .text()
+            .map_err(|e| format!("failed to read update manifest: {e}"))?;
+        if manifest.len() > 1024 * 1024 {
+            return Err("update manifest exceeds 1 MiB limit".into());
+        }
+        verify_manifest(
+            &manifest,
+            env!("CARGO_PKG_VERSION"),
+            Some(&public_key),
+            &format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH),
+            client_id,
+        )
+    }
+
+    pub fn download_and_stage(&self, update: &VerifiedUpdate) -> Result<PathBuf, String> {
+        let _transaction = UpdateTransaction::begin()?;
+        let parsed =
+            url::Url::parse(&update.artifact_url).map_err(|_| "signed artifact URL is invalid")?;
+        if parsed.scheme() != "https" || parsed.host_str().is_none() {
+            return Err("signed update artifact URL must use HTTPS".into());
+        }
+        fs::create_dir_all(self.staging_dir())
+            .map_err(|e| format!("failed to create update staging directory: {e}"))?;
+        let part = self
+            .staging_dir()
+            .join(format!("reflexdesk-{}.part", update.target_version));
+        let ready = self
+            .staging_dir()
+            .join(format!("reflexdesk-{}.verified", update.target_version));
+        let mut response = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(600))
+            .build()
+            .map_err(|e| format!("failed to create update client: {e}"))?
+            .get(parsed)
+            .send()
+            .map_err(|e| format!("update artifact request failed: {e}"))?
+            .error_for_status()
+            .map_err(|e| format!("update artifact returned an error: {e}"))?;
+        const MAX_ARTIFACT_BYTES: u64 = 1024 * 1024 * 1024;
+        if response.content_length().unwrap_or(0) > MAX_ARTIFACT_BYTES {
+            return Err("update artifact exceeds 1 GiB limit".into());
+        }
+        let mut file =
+            File::create(&part).map_err(|e| format!("failed to create staged update: {e}"))?;
+        let mut hash = Sha256::new();
+        let mut total = 0u64;
+        let mut buffer = [0u8; 64 * 1024];
+        loop {
+            let read = response
+                .read(&mut buffer)
+                .map_err(|e| format!("failed reading update artifact: {e}"))?;
+            if read == 0 {
+                break;
+            }
+            total = total.saturating_add(read as u64);
+            if total > MAX_ARTIFACT_BYTES {
+                let _ = fs::remove_file(&part);
+
+                return Err("update artifact exceeds 1 GiB limit".into());
+            }
+            hash.update(&buffer[..read]);
+            file.write_all(&buffer[..read])
+                .map_err(|e| format!("failed writing staged update: {e}"))?;
+        }
+        file.sync_all()
+            .map_err(|e| format!("failed to sync staged update: {e}"))?;
+        let actual = format!("{:x}", hash.finalize());
+        if !actual.eq_ignore_ascii_case(&update.artifact_sha256) {
+            let _ = fs::remove_file(&part);
+            return Err("downloaded update SHA-256 does not match signed manifest".into());
+        }
+        if ready.exists() {
+            fs::remove_file(&ready).map_err(|e| format!("failed replacing staged update: {e}"))?;
+        }
+        fs::rename(&part, &ready).map_err(|e| format!("failed to activate staged update: {e}"))?;
+        Ok(ready)
+    }
+    pub fn stage_available(
+        &self,
+        target_version: &str,
+        model_manager: &crate::model_manager::ModelManager,
+    ) -> Result<PathBuf, String> {
+        self.check_can_update(model_manager)?;
+        let available = match self.get_status() {
+            UpdateStatus::Available {
+                target_version: version,
+                release_notes,
+                pub_date,
+                artifact_url,
+                artifact_sha256,
+                rollout_percentage,
+                in_rollout_cohort,
+                ..
+            } if version == target_version && in_rollout_cohort => VerifiedUpdate {
+                target_version: version,
+                release_notes,
+                pub_date,
+                artifact_url,
+                artifact_sha256,
+                rollout_percentage,
+                in_rollout_cohort,
+            },
+            UpdateStatus::Available { .. } => {
+                return Err(
+                    "requested update does not match the authenticated available release".into(),
+                )
+            }
+            _ => return Err("no authenticated update is available to stage".into()),
+        };
+        self.set_status(UpdateStatus::Downloading {
+            target_version: target_version.to_string(),
+            percent: 0,
+        });
+        match self.download_and_stage(&available) {
+            Ok(path) => {
+                self.set_status(UpdateStatus::Staged {
+                    target_version: target_version.to_string(),
+                    staged_path: path.display().to_string(),
+                });
+                Ok(path)
+            }
+            Err(error) => {
+                self.set_status(UpdateStatus::Failed {
+                    error: crate::redaction::redact_error(&error),
+                });
+                Err(error)
+            }
+        }
+    }
+    pub fn check_now(
+        &self,
+        model_manager: &crate::model_manager::ModelManager,
+    ) -> Result<UpdateStatus, String> {
+        if let Err(reason) = self.check_can_update(model_manager) {
+            let blocked = UpdateStatus::Blocked {
+                reason,
+                code: "MODEL_MIGRATION_ACTIVE".into(),
+            };
+            self.set_status(blocked.clone());
+            return Ok(blocked);
+        }
+        self.set_status(UpdateStatus::Checking);
+        let client_id = self.client_id()?;
+        let status = match self.fetch_verified_update(&client_id) {
+            Ok(update) if !update.in_rollout_cohort => UpdateStatus::UpToDate {
+                current_version: env!("CARGO_PKG_VERSION").to_string(),
+            },
+            Ok(update) => UpdateStatus::Available {
+                current_version: env!("CARGO_PKG_VERSION").to_string(),
+                target_version: update.target_version,
+                release_notes: update.release_notes,
+                pub_date: update.pub_date,
+                artifact_url: update.artifact_url,
+                artifact_sha256: update.artifact_sha256,
+                rollout_percentage: update.rollout_percentage,
+                in_rollout_cohort: true,
+            },
+            Err(error) => UpdateStatus::Blocked {
+                reason: error,
+                code: "UPDATE_CHECK_FAILED".into(),
+            },
+        };
+        self.set_status(status.clone());
+        Ok(status)
+    }
 }
 
 // ============================================================================
@@ -358,9 +608,7 @@ impl UpdaterService {
 // ============================================================================
 
 #[tauri::command]
-pub fn get_update_status(
-    updater: tauri::State<'_, UpdaterService>,
-) -> UpdateStatus {
+pub fn get_update_status(updater: tauri::State<'_, UpdaterService>) -> UpdateStatus {
     updater.get_status()
 }
 
@@ -369,9 +617,9 @@ pub fn set_update_channel(
     updater: tauri::State<'_, UpdaterService>,
     channel: String,
 ) -> Result<String, String> {
-    let ch = UpdateChannel::parse_channel(&channel)?;
-    updater.set_channel(ch);
-    Ok(ch.as_str().to_string())
+    let channel = UpdateChannel::parse_channel(&channel)?;
+    updater.set_channel(channel);
+    Ok(channel.as_str().to_string())
 }
 
 #[tauri::command]
@@ -379,60 +627,9 @@ pub fn check_for_updates(
     updater: tauri::State<'_, UpdaterService>,
     model_mgr: tauri::State<'_, crate::model_manager::ModelManager>,
 ) -> Result<UpdateStatus, String> {
-    // 1. Transaction coordination check
-    if let Err(reason) = updater.check_can_update(&model_mgr) {
-        let blocked = UpdateStatus::Blocked {
-            reason: reason.clone(),
-            code: "MODEL_MIGRATION_ACTIVE".into(),
-        };
-        updater.set_status(blocked.clone());
-        return Ok(blocked);
-    }
-
-    // 2. Check updater public key configuration
-    // In production, public key is embedded in tauri.conf.json or environment.
-    let public_key = std::env::var("TAURI_UPDATER_PUBLIC_KEY").ok();
-    if public_key.as_deref().map(str::trim).unwrap_or("").is_empty() {
-        let blocked = UpdateStatus::Blocked {
-            reason: "Updates are disabled: no embedded updater public key configured in this build".into(),
-            code: "MISSING_PUBLIC_KEY".into(),
-        };
-        updater.set_status(blocked.clone());
-        return Ok(blocked);
-    }
-
-    // In preview mode or when no endpoint configured, report UpToDate
-    let status = UpdateStatus::UpToDate {
-        current_version: env!("CARGO_PKG_VERSION").to_string(),
-    };
-    updater.set_status(status.clone());
-    Ok(status)
+    updater.check_now(&model_mgr)
 }
 
-#[tauri::command]
-pub fn rollback_update(
-    updater: tauri::State<'_, UpdaterService>,
-) -> Result<RollbackMetadata, String> {
-    if is_update_in_progress() {
-        return Err("cannot perform rollback while an update is in progress".into());
-    }
-
-    let info = updater
-        .get_rollback_info()
-        .ok_or_else(|| "no previous update backup available for rollback".to_string())?;
-
-    let backup_path = Path::new(&info.backup_path);
-    if !backup_path.exists() {
-        return Err(format!(
-            "rollback backup file does not exist at {}",
-            backup_path.display()
-        ));
-    }
-
-    // Record rollback state
-    updater.set_status(UpdateStatus::Idle);
-    Ok(info)
-}
 
 // ============================================================================
 // Unit Tests
@@ -441,12 +638,45 @@ pub fn rollback_update(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ed25519_dalek::{Signer, SigningKey};
+
+    fn signed_manifest(version: &str) -> (String, String) {
+        let signing_key = SigningKey::from_bytes(&[7u8; 32]);
+        let url = "https://example.com/download.zip";
+        let sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let payload = signed_artifact_payload(version, "windows-x86_64", url, sha256);
+        let signature = BASE64.encode(signing_key.sign(&payload).to_bytes());
+        let public_key = BASE64.encode(signing_key.verifying_key().to_bytes());
+        (
+            serde_json::json!({
+                "version": version,
+                "platforms": {
+                    "windows-x86_64": {
+                        "url": url,
+                        "sha256": sha256,
+                        "signature": signature
+                    }
+                }
+            })
+            .to_string(),
+            public_key,
+        )
+    }
 
     #[test]
     fn test_channel_parsing() {
-        assert_eq!(UpdateChannel::parse_channel("stable").unwrap(), UpdateChannel::Stable);
-        assert_eq!(UpdateChannel::parse_channel("BETA").unwrap(), UpdateChannel::Beta);
-        assert_eq!(UpdateChannel::parse_channel("nightly").unwrap(), UpdateChannel::Nightly);
+        assert_eq!(
+            UpdateChannel::parse_channel("stable").unwrap(),
+            UpdateChannel::Stable
+        );
+        assert_eq!(
+            UpdateChannel::parse_channel("BETA").unwrap(),
+            UpdateChannel::Beta
+        );
+        assert_eq!(
+            UpdateChannel::parse_channel("nightly").unwrap(),
+            UpdateChannel::Nightly
+        );
         assert!(UpdateChannel::parse_channel("invalid").is_err());
     }
 
@@ -471,26 +701,32 @@ mod tests {
     }
 
     #[test]
-    fn test_verify_manifest_downgrade_rejected() {
-        let manifest = r#"{
-            "version": "0.0.9",
-            "platforms": {
-                "windows-x86_64": {
-                    "url": "https://example.com/download.zip",
-                    "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-                    "signature": "VALID_SIGNATURE"
-                }
-            }
-        }"#;
-        let res = verify_manifest(
-            manifest,
+    fn test_verify_manifest_downgrade_rejected_after_authentication() {
+        let (manifest, public_key) = signed_manifest("0.0.9");
+        let error = verify_manifest(
+            &manifest,
             "0.1.0",
-            Some("dGVzdC1wdWJsaWMta2V5LWZvci11cGRhdGVy"),
+            Some(&public_key),
             "windows-x86_64",
             "client_1",
-        );
-        assert!(res.is_err());
-        assert!(res.unwrap_err().contains("downgrade"));
+        )
+        .unwrap_err();
+        assert!(error.contains("downgrade"));
+    }
+
+    #[test]
+    fn test_verify_manifest_tampering_rejected_cryptographically() {
+        let (manifest, public_key) = signed_manifest("0.2.0");
+        let tampered = manifest.replace("download.zip", "evil.zip");
+        let error = verify_manifest(
+            &tampered,
+            "0.1.0",
+            Some(&public_key),
+            "windows-x86_64",
+            "client_1",
+        )
+        .unwrap_err();
+        assert!(error.contains("signature verification failed"));
     }
 
     #[test]

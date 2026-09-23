@@ -34,9 +34,12 @@ See [P0.md](P0.md) for lifecycle and security decisions.
 
 - first Nemotron use needs network access to fetch model weights
 - Windows/Linux CUDA/Vulkan runtime auto-selection is not yet enabled
-- native accessibility-tree control is not yet implemented
-- browser DOM/CDP control is not yet implemented
+- semantic desktop control is currently limited to the Windows Win32 fallback; UIA,
+  macOS AX, and Linux AT-SPI adapters are not yet linked
+- authenticated Chrome DOM control is implemented; representative-site acceptance,
+  Firefox compatibility, and CDP integration remain open
 - structured ACP adapters and harness interrupt/resume are not yet implemented
 - stable installers are not signed/notarized until external credentials exist
-- automatic updater activation waits for updater signing keys
+- updater manifests and artifacts are verified and staged, but installer activation
+  and rollback remain unavailable until the signed platform updater is integrated
 - the current CrispASR realtime WebSocket is not enabled because its listener is not loopback/auth hardened; P0 uses authenticated local HTTP after a short speech-final boundary

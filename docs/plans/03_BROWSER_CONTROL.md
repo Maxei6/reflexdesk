@@ -1,7 +1,7 @@
 # Plan 03 — Browser DOM/CDP control
 
 **Priority:** P1  
-**Status:** ACCEPTANCE PENDING  
+**Status:** CODE COMPLETE (LIVE ACCEPTANCE PENDING)
 **Depends on:** policy engine  
 **Driver:** Plan03Browser agent  
 **Last Updated:** 2026-09-22  
@@ -62,7 +62,13 @@ post-action verification and clear handling of blocked/captcha/auth states.
 ## Acceptance Notes & Implementation Summary
 
 - **Protocol**: `extension/protocol.json` specifies versioned envelope (`{v, session, pairing, tabId, ref, action, args, nonce}`), 12 `browser.*` actions, snapshot compression rules (tag skipping, container pruning, 500 element limit, redaction), and standard error codes (`stale-ref`, `spa-mutation`, `blocked`, `captcha`, `auth-required`, `element-not-found`, `action-timeout`, `bridge-unavailable`, `pairing-rejected`).
-- **Chrome MV3 / Firefox Extension**: `extension/chrome/manifest.json`, `content.js`, `background.js`, and `popup.html`/`popup.js` implemented with MutationObserver SPA tracking, semantic accessibility DOM builder, sensitive field masking, and local bridge WebSocket client.
-- **Runtime Engine**: `src-tauri/src/browser.rs` exposes `tabs`, `open` (using `security::sanitize_open_external`), `inspect`, `find`, `click`, `type_text`, `select`, `scroll`, `extract`, `wait`, `download`, `verify_action`, deterministic `health()`, and status reporting.
-- **Policy & Gate**: All browser tools declared in `src-tauri/src/policy.rs` tool registry with schema validation in `validate_args`, sensitive submission detection (`is_sensitive_submission`), and verification wiring through `policy::verify_stub`.
-- **Commands & ACL**: `get_browser_status` and `get_browser_pairing_secret` registered in `src-tauri/src/lib.rs`, `src-tauri/build.rs`, `permissions/reflexdesk.toml`, and `capabilities/main.json`.
+- **Chrome MV3 Extension**: `extension/chrome/manifest.json`, `content.js`, `background.js`, and `popup.html`/`popup.js` implement MutationObserver SPA tracking, a semantic accessibility DOM builder, sensitive-field masking, nonce replay rejection, and an authenticated local WebSocket client. Firefox compatibility remains open.
+- **Authenticated Bridge**: `src-tauri/src/browser.rs` binds only to `127.0.0.1`, requires a per-install pairing secret stored in the OS credential vault, correlates protocol version/session/nonce/pairing on every response, bounds message size and timeouts, and disconnects on protocol violations.
+- **Runtime Engine**: `tabs`, `open`, `inspect`, `find`, `click`, `type_text`, `select`, `scroll`, `extract`, `wait`, `download`, and `verify_action` now execute through the authenticated extension bridge. Bridge health reflects a real connected extension instead of simulated state.
+- **Policy & Gate**: All browser tools are declared in `src-tauri/src/policy.rs`, validated before dispatch, and sensitive submission remains confirmation-gated.
+- **Commands & ACL**: `get_browser_status` and `get_browser_pairing_secret` remain least-privilege Tauri commands for the main window.
+
+- Acceptance remains open until live Chrome tests complete navigation, search,
+  form filling, tab switching, downloads, blocked/captcha/auth handling, and
+  post-action verification across representative sites. Firefox and CDP work
+  packages also remain open.

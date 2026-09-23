@@ -61,7 +61,7 @@ pub enum ActionSource {
 // Frozen structs (field names frozen by contracts.md)
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct VerificationContract {
     pub kind: String,
     pub selector: Option<String>,
@@ -298,7 +298,7 @@ pub fn tool_registry() -> HashMap<&'static str, ToolDef> {
             risk: RiskClass::Safe,
             capability: "system.update",
             needs_confirm: false,
-            external: false,
+            external: true,
         },
         ToolDef {
             name: "system.update_apply",
@@ -387,7 +387,9 @@ pub fn validate_args(tool: &str, args: &serde_json::Value) -> Result<serde_json:
             let query = args
                 .get("query")
                 .and_then(serde_json::Value::as_str)
-                .ok_or_else(|| "invalid-args: browser.search requires {query: string}".to_string())?;
+                .ok_or_else(|| {
+                    "invalid-args: browser.search requires {query: string}".to_string()
+                })?;
             let query = query.trim();
             if query.is_empty() || query.len() > 500 {
                 return Err("invalid-args: browser.search query must be 1..500 chars".into());
@@ -396,7 +398,10 @@ pub fn validate_args(tool: &str, args: &serde_json::Value) -> Result<serde_json:
         }
         "browser.tabs" => {
             let mut out = serde_json::json!({});
-            if let Some(cw) = args.get("current_window_only").and_then(serde_json::Value::as_bool) {
+            if let Some(cw) = args
+                .get("current_window_only")
+                .and_then(serde_json::Value::as_bool)
+            {
                 out["current_window_only"] = serde_json::Value::Bool(cw);
             }
             Ok(out)
@@ -427,7 +432,10 @@ pub fn validate_args(tool: &str, args: &serde_json::Value) -> Result<serde_json:
             if let Some(by) = args.get("by").and_then(serde_json::Value::as_str) {
                 let by_norm = by.to_lowercase();
                 if !["selector", "text", "role", "label"].contains(&by_norm.as_str()) {
-                    return Err("invalid-args: browser.find by must be selector, text, role, or label".into());
+                    return Err(
+                        "invalid-args: browser.find by must be selector, text, role, or label"
+                            .into(),
+                    );
                 }
                 out["by"] = serde_json::Value::String(by_norm);
             }
@@ -483,7 +491,9 @@ pub fn validate_args(tool: &str, args: &serde_json::Value) -> Result<serde_json:
             let value = args
                 .get("value")
                 .and_then(serde_json::Value::as_str)
-                .ok_or_else(|| "invalid-args: browser.select requires {value: string}".to_string())?;
+                .ok_or_else(|| {
+                    "invalid-args: browser.select requires {value: string}".to_string()
+                })?;
             let mut out = serde_json::json!({ "ref": ref_id.trim(), "value": value });
             if let Some(tab_id) = args.get("tab_id").and_then(serde_json::Value::as_u64) {
                 out["tab_id"] = serde_json::json!(tab_id);
@@ -498,7 +508,10 @@ pub fn validate_args(tool: &str, args: &serde_json::Value) -> Result<serde_json:
             if let Some(dir) = args.get("direction").and_then(serde_json::Value::as_str) {
                 let dir_norm = dir.to_lowercase();
                 if !["up", "down", "top", "bottom"].contains(&dir_norm.as_str()) {
-                    return Err("invalid-args: browser.scroll direction must be up, down, top, or bottom".into());
+                    return Err(
+                        "invalid-args: browser.scroll direction must be up, down, top, or bottom"
+                            .into(),
+                    );
                 }
                 out["direction"] = serde_json::Value::String(dir_norm);
             }
@@ -524,7 +537,9 @@ pub fn validate_args(tool: &str, args: &serde_json::Value) -> Result<serde_json:
             let selector = args
                 .get("selector")
                 .and_then(serde_json::Value::as_str)
-                .ok_or_else(|| "invalid-args: browser.wait requires {selector: string}".to_string())?;
+                .ok_or_else(|| {
+                    "invalid-args: browser.wait requires {selector: string}".to_string()
+                })?;
             let mut out = serde_json::json!({ "selector": selector.trim() });
             if let Some(tab_id) = args.get("tab_id").and_then(serde_json::Value::as_u64) {
                 out["tab_id"] = serde_json::json!(tab_id);
@@ -541,7 +556,9 @@ pub fn validate_args(tool: &str, args: &serde_json::Value) -> Result<serde_json:
             let url = args
                 .get("url")
                 .and_then(serde_json::Value::as_str)
-                .ok_or_else(|| "invalid-args: browser.download requires {url: string}".to_string())?;
+                .ok_or_else(|| {
+                    "invalid-args: browser.download requires {url: string}".to_string()
+                })?;
             let sanitized = crate::security::sanitize_open_external(url)?;
             let mut out = serde_json::json!({ "url": sanitized });
             if let Some(fname) = args.get("filename").and_then(serde_json::Value::as_str) {
@@ -570,7 +587,9 @@ pub fn validate_args(tool: &str, args: &serde_json::Value) -> Result<serde_json:
             let harness = args
                 .get("harness")
                 .and_then(serde_json::Value::as_str)
-                .ok_or_else(|| "invalid-args: harness.start requires {harness: string}".to_string())?;
+                .ok_or_else(|| {
+                    "invalid-args: harness.start requires {harness: string}".to_string()
+                })?;
             let key = harness.trim().to_lowercase();
             match key.as_str() {
                 "opencode" | "kilo" | "codex" | "claude" | "claude code" | "gemini" => {}
@@ -608,9 +627,9 @@ pub fn validate_args(tool: &str, args: &serde_json::Value) -> Result<serde_json:
             Ok(out)
         }
         "desktop.find" => {
-            let sel = args
-                .get("selector")
-                .ok_or_else(|| "invalid-args: desktop.find requires {selector: object}".to_string())?;
+            let sel = args.get("selector").ok_or_else(|| {
+                "invalid-args: desktop.find requires {selector: object}".to_string()
+            })?;
             let mut out = serde_json::json!({ "selector": sel });
             if let Some(win) = args.get("window").and_then(serde_json::Value::as_str) {
                 if win.len() > 256 {
@@ -624,7 +643,9 @@ pub fn validate_args(tool: &str, args: &serde_json::Value) -> Result<serde_json:
             let win_id = args.get("window_id").and_then(serde_json::Value::as_u64);
             let title = args.get("title_or_app").and_then(serde_json::Value::as_str);
             if win_id.is_none() && title.is_none() {
-                return Err("invalid-args: desktop.focus_window requires window_id or title_or_app".into());
+                return Err(
+                    "invalid-args: desktop.focus_window requires window_id or title_or_app".into(),
+                );
             }
             let mut out = serde_json::json!({});
             if let Some(id) = win_id {
@@ -632,7 +653,10 @@ pub fn validate_args(tool: &str, args: &serde_json::Value) -> Result<serde_json:
             }
             if let Some(t) = title {
                 if t.trim().is_empty() || t.len() > 256 {
-                    return Err("invalid-args: desktop.focus_window title_or_app must be 1..256 chars".into());
+                    return Err(
+                        "invalid-args: desktop.focus_window title_or_app must be 1..256 chars"
+                            .into(),
+                    );
                 }
                 out["title_or_app"] = serde_json::Value::String(t.to_string());
             }
@@ -642,7 +666,9 @@ pub fn validate_args(tool: &str, args: &serde_json::Value) -> Result<serde_json:
             let win_id = args.get("window_id").and_then(serde_json::Value::as_u64);
             let title = args.get("title_or_app").and_then(serde_json::Value::as_str);
             if win_id.is_none() && title.is_none() {
-                return Err("invalid-args: desktop.close_window requires window_id or title_or_app".into());
+                return Err(
+                    "invalid-args: desktop.close_window requires window_id or title_or_app".into(),
+                );
             }
             let mut out = serde_json::json!({});
             if let Some(id) = win_id {
@@ -650,7 +676,10 @@ pub fn validate_args(tool: &str, args: &serde_json::Value) -> Result<serde_json:
             }
             if let Some(t) = title {
                 if t.trim().is_empty() || t.len() > 256 {
-                    return Err("invalid-args: desktop.close_window title_or_app must be 1..256 chars".into());
+                    return Err(
+                        "invalid-args: desktop.close_window title_or_app must be 1..256 chars"
+                            .into(),
+                    );
                 }
                 out["title_or_app"] = serde_json::Value::String(t.to_string());
             }
@@ -721,7 +750,9 @@ pub fn validate_args(tool: &str, args: &serde_json::Value) -> Result<serde_json:
             let key = args
                 .get("key")
                 .and_then(serde_json::Value::as_str)
-                .ok_or_else(|| "invalid-args: desktop.press_key requires {key: string}".to_string())?;
+                .ok_or_else(|| {
+                    "invalid-args: desktop.press_key requires {key: string}".to_string()
+                })?;
             let key = key.trim();
             if key.is_empty() || key.len() > 64 {
                 return Err("invalid-args: desktop.press_key key must be 1..64 chars".into());
@@ -738,8 +769,14 @@ pub fn validate_args(tool: &str, args: &serde_json::Value) -> Result<serde_json:
             if el_id.is_none() && sel.is_none() {
                 return Err("invalid-args: desktop.scroll requires element_id or selector".into());
             }
-            let dir = args.get("direction").and_then(serde_json::Value::as_str).unwrap_or("down");
-            let amount = args.get("amount").and_then(serde_json::Value::as_f64).unwrap_or(1.0);
+            let dir = args
+                .get("direction")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("down");
+            let amount = args
+                .get("amount")
+                .and_then(serde_json::Value::as_f64)
+                .unwrap_or(1.0);
             let mut out = serde_json::json!({ "direction": dir, "amount": amount });
             if let Some(id) = el_id {
                 out["element_id"] = serde_json::Value::from(id);
@@ -765,8 +802,14 @@ pub fn validate_args(tool: &str, args: &serde_json::Value) -> Result<serde_json:
             Ok(out)
         }
         "desktop.verify" => {
-            let kind = args.get("kind").and_then(serde_json::Value::as_str).unwrap_or("desktop-element-state");
-            let timeout_ms = args.get("timeout_ms").and_then(serde_json::Value::as_u64).unwrap_or(2000);
+            let kind = args
+                .get("kind")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("desktop-element-state");
+            let timeout_ms = args
+                .get("timeout_ms")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(2000);
             Ok(serde_json::json!({
                 "kind": kind,
                 "selector": args.get("selector"),
@@ -775,14 +818,20 @@ pub fn validate_args(tool: &str, args: &serde_json::Value) -> Result<serde_json:
             }))
         }
         "system.update_check" => {
-            let channel = args.get("channel").and_then(serde_json::Value::as_str).unwrap_or("stable");
+            let channel = args
+                .get("channel")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("stable");
             Ok(serde_json::json!({ "channel": channel }))
         }
         "system.update_apply" => {
             let target_version = args
                 .get("target_version")
                 .and_then(serde_json::Value::as_str)
-                .ok_or_else(|| "invalid-args: system.update_apply requires {target_version: string}".to_string())?;
+                .ok_or_else(|| {
+                    "invalid-args: system.update_apply requires {target_version: string}"
+                        .to_string()
+                })?;
             Ok(serde_json::json!({ "target_version": target_version }))
         }
         _ => Err(format!("unknown-tool: {tool}")),
@@ -849,7 +898,10 @@ fn cancelled_set() -> std::sync::MutexGuard<'static, Option<HashSet<String>>> {
 pub fn cancel_now(reason: &str) {
     GLOBAL_GENERATION.fetch_add(1, Ordering::SeqCst);
     let mut set = cancelled_set();
-    let known: Vec<String> = set.as_ref().map(|s| s.iter().cloned().collect()).unwrap_or_default();
+    let known: Vec<String> = set
+        .as_ref()
+        .map(|s| s.iter().cloned().collect())
+        .unwrap_or_default();
     let entry = set.get_or_insert_with(HashSet::new);
     for session in known {
         entry.insert(session);
@@ -914,7 +966,7 @@ fn rand_hex(bytes: &[u8]) -> String {
 pub fn new_confirmation_id() -> String {
     use rand::RngCore;
     let mut bytes = [0u8; 16];
-    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    rand::rng().fill_bytes(&mut bytes);
     // UUIDv4 version + variant bits.
     bytes[6] = (bytes[6] & 0x0f) | 0x40;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
@@ -976,10 +1028,14 @@ pub struct ConfirmationRequest {
     pub args_summary: String,
 }
 
-static PENDING_CONFIRMATIONS: Mutex<Option<HashMap<String, PendingConfirmation>>> = Mutex::new(None);
+static PENDING_CONFIRMATIONS: Mutex<Option<HashMap<String, PendingConfirmation>>> =
+    Mutex::new(None);
 
-fn pending_confirmations_map() -> std::sync::MutexGuard<'static, Option<HashMap<String, PendingConfirmation>>> {
-    PENDING_CONFIRMATIONS.lock().unwrap_or_else(|e| e.into_inner())
+fn pending_confirmations_map(
+) -> std::sync::MutexGuard<'static, Option<HashMap<String, PendingConfirmation>>> {
+    PENDING_CONFIRMATIONS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
 }
 
 /// 10 minutes timeout for pending confirmations (auto-deny on expiration).
@@ -996,8 +1052,11 @@ pub fn summarize_args(args: &serde_json::Value) -> String {
             let mut parts: Vec<String> = Vec::with_capacity(map.len());
             for (key, val) in map {
                 let redacted_val = match val {
-                    serde_json::Value::String(s) => crate::redaction::redact_text(s),
-                    _ => crate::redaction::redact_text(&val.to_string()),
+                    serde_json::Value::String(s) => crate::redaction::redact_text(s).into_owned(),
+                    _ => {
+                        let rendered = val.to_string();
+                        crate::redaction::redact_text(&rendered).into_owned()
+                    }
                 };
                 parts.push(format!("{key}={redacted_val}"));
             }
@@ -1265,7 +1324,9 @@ mod tests {
         let id = new_confirmation_id();
         assert!(is_confirmation_id(&id));
         assert!(!is_confirmation_id("confirm:not-a-uuid"));
-        assert!(!is_confirmation_id("other:12345678-1234-4234-8234-1234567890ab"));
+        assert!(!is_confirmation_id(
+            "other:12345678-1234-4234-8234-1234567890ab"
+        ));
     }
     #[test]
     fn decide_and_prepare_negation_denies() {
@@ -1340,7 +1401,12 @@ mod tests {
         };
         let dec = decide_and_prepare(&env, None);
         let cid = match dec {
-            PolicyDecision::NeedConfirm { confirmation_id, tool, risk, args_summary } => {
+            PolicyDecision::NeedConfirm {
+                confirmation_id,
+                tool,
+                risk,
+                args_summary,
+            } => {
                 assert_eq!(tool, "app.open");
                 assert_eq!(risk, RiskClass::Sensitive);
                 assert!(args_summary.contains("app=calculator"));
