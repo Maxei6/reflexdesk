@@ -1,9 +1,9 @@
 # Plan 12 — Native / authenticated streaming STT
 
 **Priority:** P2  
-**Status:** ACCEPTANCE PENDING  
+**Status:** CODE COMPLETE FOR AUTHENTICATED STREAMING (ON-MACHINE METRICS PENDING)  
 **Branch:** feat/production-roadmap-one-pass  
-**Last Updated:** 2026-09-22
+**Last Updated:** 2026-09-23
 
 ## Objective
 
@@ -56,7 +56,7 @@ No public/local network listener is preferred.
 
 ### 4. Expose partial/final events to UI
 - **Status:** Complete.
-- Partials emitted over `reflexdesk://stt-partial` carrying `{ session_id, text, redacted_text, speculative_action, confidence, is_final: false }`.
+- Real partial hypotheses are generated from accumulated PCM through the authenticated loopback STT engine at a bounded audio cadence when the caller does not already supply a partial. Partials are emitted over `reflexdesk://stt-partial` carrying `{ session_id, text, redacted_text, speculative_action, confidence, is_final: false }`.
 - `src/overlay.js` listens to `reflexdesk://stt-partial` and updates overlay HUD captions in real time.
 - All partial text is processed through `redaction::redact_text` prior to diagnostic logging and event emission.
 
@@ -73,7 +73,7 @@ No public/local network listener is preferred.
 - Cleans up session PCM buffers and active pre-routing state.
 
 ### 7. Compare latency/WER against current HTTP path
-- **Status:** Partial (seam + live tracker complete; on-machine measurement open).
+- **Status:** Code complete; on-machine latency/WER measurement remains open.
 - Baseline metrics tracking implemented in `src-tauri/src/stt/native.rs` (`SttBaselineMetrics`, `BaselineTracker`):
   - HTTP p50 speech-end latency: unmeasured (`None`) until reproducibly measured on-machine.
   - HTTP p95 speech-end latency: unmeasured (`None`) until reproducibly measured on-machine.
@@ -89,7 +89,8 @@ No public/local network listener is preferred.
 
 ## Definition of done verification
 
-- Streaming path provides incremental AudioWorklet -> Rust bridge with speculative pre-routing.
+- Streaming path provides incremental AudioWorklet -> Rust bridge, genuine authenticated local partial hypotheses, and speculative pre-routing.
+- Direct in-process CrispASR C-ABI streaming remains intentionally disabled because the upstream release does not ship the required stable shared-library ABI; this is an upstream packaging constraint, not a fallback to an unauthenticated listener.
 - No unauthenticated realtime network listener is opened (`0.0.0.0` WebSocket disabled).
 - Speculative pre-routing warms the reflex cache to reduce execution latency upon final transcript submission (reduction unmeasured).
-- Unit and integration tests pass (full JS suite 96/96 green as of 2026-09-22, including `tests/stt_streaming.test.mjs`; Rust tests not yet run — no toolchain in this environment).
+- Rust and JS suites are required to pass in repository CI on Windows, macOS and Linux before merge. Physical speech-end latency/WER values remain null until measured reproducibly on-machine.
