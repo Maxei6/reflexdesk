@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "ReflexDesk Browser Bridge",
   "version": "0.1.0",
-  "description": "Semantic DOM, accessibility, and CDP-level browser automation bridge for ReflexDesk local AI control.",
+  "description": "Semantic DOM and accessibility automation bridge for ReflexDesk.",
   "icons": {
     "16": "icons/icon16.png",
     "48": "icons/icon48.png",
@@ -20,13 +20,16 @@
     "<all_urls>"
   ],
   "background": {
-    "service_worker": "background.js",
-    "scripts": ["background.js"]
+    "service_worker": "background.js"
   },
   "content_scripts": [
     {
-      "matches": ["<all_urls>"],
-      "js": ["content.js"],
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "content.js"
+      ],
       "run_at": "document_idle",
       "all_frames": false
     }
@@ -34,11 +37,5 @@
   "action": {
     "default_popup": "popup.html",
     "default_title": "ReflexDesk Browser Bridge"
-  },
-  "browser_specific_settings": {
-    "gecko": {
-      "id": "browser-bridge@reflexdesk.local",
-      "strict_min_version": "109.0"
-    }
   }
 }
